@@ -1,0 +1,11 @@
+bot_*.log
+
+# Python environment
+venv
+.env
+.venv
+
+# Temporary files
+*.pyc
+__pycache__
+scratch
