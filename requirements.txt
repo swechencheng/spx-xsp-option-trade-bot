@@ -1,0 +1,6 @@
+requests
+yfinance
+pandas
+ib_async
+pytz
+scipy
