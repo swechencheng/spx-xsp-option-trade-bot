@@ -104,11 +104,10 @@ class OptionFinder:
         target_idx = min(dte_target, len(valid_expirations) - 1)
         selected_expiry = valid_expirations[target_idx]
 
-        exp_date_obj = datetime.datetime.strptime(selected_expiry, "%Y%m%d").date()
-        days_left = (exp_date_obj - datetime.date.today()).days
-        T = max(days_left, 1) / 365.0
+        trading_days_left = target_idx
+        T = max(trading_days_left, 1) / 252.0
         print(
-            f"Locked expiration: {selected_expiry} ({days_left} days from now, T={T:.4f})"
+            f"Locked expiration: {selected_expiry} ({trading_days_left} trading days from now, T={T:.4f})"
         )
 
         # Signed target delta: negative for puts, positive for calls
