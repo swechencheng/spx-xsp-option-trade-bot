@@ -88,16 +88,21 @@ class OptionFinder:
         )
         cboe_chain = next(c for c in chains if c.exchange == "CBOE")
 
-        # Lock target expiration date and calculate annualized time to expiry (T)
-        target_date = (
-            datetime.datetime.now() + datetime.timedelta(days=dte_target)
-        ).date()
-        selected_expiry = min(
-            cboe_chain.expirations,
-            key=lambda x: abs(
-                datetime.datetime.strptime(x, "%Y%m%d").date() - target_date
-            ),
+        # Lock target expiration date based on trading days (using actual CBOE expirations)
+        today = datetime.date.today()
+        # Sort expirations and filter out any that have already passed
+        valid_expirations = sorted(
+            [
+                exp
+                for exp in cboe_chain.expirations
+                if datetime.datetime.strptime(exp, "%Y%m%d").date() >= today
+            ]
         )
+
+        # Select the expiration by index (0 = today, 1 = next trading day, etc.)
+        # This inherently skips weekends and market holidays perfectly
+        target_idx = min(dte_target, len(valid_expirations) - 1)
+        selected_expiry = valid_expirations[target_idx]
 
         exp_date_obj = datetime.datetime.strptime(selected_expiry, "%Y%m%d").date()
         days_left = (exp_date_obj - datetime.date.today()).days
