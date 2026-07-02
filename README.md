@@ -3,7 +3,7 @@
 > [!CAUTION]
 > **Disclaimer & Caveat**: This software is strictly for **educational and personal study purposes only**. It is **NOT** intended for commercial use, and it does **NOT** constitute financial advice. Options trading involves significant risk of loss. The author assumes no liability for any financial losses incurred. Use entirely at your own risk.
 
-An end-to-end automated trading bot for Interactive Brokers (IBKR) that trades 0DTE or short DTE Credit Spreads on the XSP (Mini-SPX) index.
+An end-to-end automated trading bot for Interactive Brokers (IBKR) that trades next-day (1DTE) Credit Spreads on the XSP (Mini-SPX) index.
 
 This bot analyzes live market data, calculates theoretical option prices using the Black-Scholes model, automatically identifies the optimal strike prices based on target deltas, and executes trades using a "Walk-the-Book" algorithm to ensure the best possible fill price.
 
@@ -44,6 +44,7 @@ When a valid trend is detected, the bot performs the following steps:
 2. **Option Discovery (Black-Scholes)**: Instead of requesting delayed option chains from IBKR, the bot uses the live VIX and SPX prices to calculate theoretical option prices using the Black-Scholes equation. It scans the theoretical chain to find:
    - A "Sell" leg with an absolute Delta of **0.20**
    - A "Buy" leg with an absolute Delta of **0.10**
+   - **Holiday-Aware Expiration Selection**: Instead of blindly adding calendar days, the bot downloads the list of live expirations directly from CBOE and sorts them. This allows it to perfectly calculate the next _trading day_ for 1DTE expirations, automatically skipping weekends and exchange holidays.
 3. **Execution (Walk the Book)**:
    - The bot connects to the IBKR TWS/Gateway API.
    - It constructs a `BAG` combo order (a multi-leg spread).
@@ -57,7 +58,7 @@ When a valid trend is detected, the bot performs the following steps:
 This strategy relies on the core mathematical advantages of option selling:
 
 1. **High Probability of Success**: By selling options at the 0.20 Delta, there is an approximate **80% statistical probability** that the sold option will expire Out-Of-The-Money (OOTM) and be completely worthless.
-2. **Rapid Theta Decay**: Trading options close to expiration (0DTE/1DTE) means that the time value of the option decays exponentially fast.
+2. **Rapid Theta Decay**: Trading options close to expiration (1DTE) means that the time value of the option decays exponentially fast.
 3. **Trend Following**: By filtering trades using the EMA20, the bot ensures you are always trading _with_ the broader market momentum. You are placing bets that the market will not sharply reverse against the current short-term trend.
 4. **Defined Risk**: Buying the 0.10 Delta option creates a "Credit Spread." This caps your maximum potential loss in the event of a black swan market crash, making the strategy highly capital efficient.
 
@@ -68,8 +69,8 @@ This strategy relies on the core mathematical advantages of option selling:
 While highly probable, this strategy is not without risks. You must be aware of the market conditions where it can lose money:
 
 1. **Sharp Mean Reversions (Whipsaws)**: The strategy uses the EMA20 to trade _with_ the trend. If the market is chopping sideways or experiences a violent intraday reversal (e.g., a sudden 1-2% drop after an uptrend), the underlying index can quickly crash through your short strike.
-2. **High Gamma (Pin Risk)**: Short-duration options (0DTE/1DTE) have extremely high Gamma. This means that if the index gets close to your strike price on expiration day, the delta will change very rapidly. A small index movement can instantly turn a safe position into a max-loss position.
-3. **Overnight Gap Risk (for 1DTE)**: If executing 1DTE trades, holding them overnight exposes you to gap risk. Unforeseen macroeconomic news (CPI drops, Fed announcements, or geopolitical events) can cause the market to gap open the next morning far past your strike prices, leaving no room to manage the trade.
+2. **High Gamma (Pin Risk)**: Short-duration options (1DTE) have extremely high Gamma. This means that if the index gets close to your strike price on expiration day, the delta will change very rapidly. A small index movement can instantly turn a safe position into a max-loss position.
+3. **Overnight Gap Risk**: Because the strategy executes at 3:55 PM for expiration on the next trading day, holding the position overnight exposes you to gap risk. Unforeseen macroeconomic news (CPI drops, Fed announcements, or geopolitical events) can cause the market to gap open the next morning far past your strike prices, leaving no room to manage the trade.
 4. **Asymmetric Risk/Reward**: Because you are trading high-probability setups (selling 0.20 Deltas), the premium you collect is small relative to the maximum possible loss (the distance between your spread strikes). A single max-loss event can wipe out the profits of several successful trades.
 
 ---
