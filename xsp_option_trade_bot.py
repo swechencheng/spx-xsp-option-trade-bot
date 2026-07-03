@@ -15,7 +15,7 @@ IB_PORT = 7497  # TWS paper trading (change to 7496 for live)
 CLIENT_ID = 15
 
 HIGH_DELTA_ABS = 0.20  # Sell leg target delta
-LOW_DELTA_ABS = 0.10  # Buy leg target delta
+LOW_DELTA_ABS = 0.06  # Buy leg target delta
 DTE_TARGET = 1  # Target days-to-expiration
 
 MAX_EMA_GAP_DAYS = 20  # Maximum continuous days for EMA gap
