@@ -1,4 +1,5 @@
 import sys
+import argparse
 from datetime import datetime
 import pytz
 import pandas as pd
@@ -8,18 +9,6 @@ from ib_async import IB
 from market_data_fetcher import MarketDataFetcher
 from xsp_option_finder_theory import OptionFinder
 from xsp_option_trader import BullPutSpreadTrader, BearCallSpreadTrader
-
-# ==================== Configuration ====================
-IB_HOST = "127.0.0.1"
-IB_PORT = 7497  # TWS paper trading (change to 7496 for live)
-CLIENT_ID = 15
-
-HIGH_DELTA_ABS = 0.20  # Sell leg target delta
-LOW_DELTA_ABS = 0.06  # Buy leg target delta
-DTE_TARGET = 1  # Target days-to-expiration
-
-MAX_EMA_GAP_DAYS = 20  # Maximum continuous days for EMA gap
-# =======================================================
 
 
 def count_consecutive_true(series: pd.Series) -> int:
@@ -53,6 +42,70 @@ def is_valid_trading_day() -> bool:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="XSP Automated Options Trading Bot")
+    parser.add_argument(
+        "--ib-host",
+        type=str,
+        default="127.0.0.1",
+        help="IBKR Host (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--ib-port", type=int, default=7497, help="IBKR Port (default: 7497)"
+    )
+    parser.add_argument(
+        "--client-id", type=int, default=15, help="IBKR Client ID (default: 15)"
+    )
+    parser.add_argument(
+        "--high-delta",
+        type=float,
+        default=0.20,
+        help="Sell leg target delta (default: 0.20)",
+    )
+    parser.add_argument(
+        "--low-delta",
+        type=float,
+        default=0.06,
+        help="Buy leg target delta (default: 0.06)",
+    )
+    parser.add_argument(
+        "--dte-target",
+        type=int,
+        default=1,
+        help="Target days-to-expiration (default: 1)",
+    )
+    parser.add_argument(
+        "--max-ema-gap",
+        type=int,
+        default=20,
+        help="Max continuous days for EMA gap (default: 20)",
+    )
+    parser.add_argument(
+        "--walk-step",
+        type=float,
+        default=0.03,
+        help="Credit reduction per repricing round (default: 0.03)",
+    )
+    parser.add_argument(
+        "--walk-interval",
+        type=int,
+        default=10,
+        help="Seconds to wait between fill checks (default: 10)",
+    )
+    parser.add_argument(
+        "--min-credit",
+        type=float,
+        default=0.09,
+        help="Minimum acceptable net credit (default: 0.09)",
+    )
+    parser.add_argument(
+        "--quantity",
+        type=int,
+        default=1,
+        help="Number of spread contracts to trade (default: 1)",
+    )
+
+    args = parser.parse_args()
+
     print("=" * 60)
     print(f" XSP Automated Trading Bot - Started at {datetime.now()}")
     print("=" * 60)
@@ -94,9 +147,9 @@ def main():
         gap_streak = count_consecutive_true(df["Low"] > df["EMA20"])
         print(f"[*] Bullish Regime detected. EMA Gap streak: {gap_streak} days.")
 
-        if gap_streak > MAX_EMA_GAP_DAYS:
+        if gap_streak > args.max_ema_gap:
             print(
-                f"[!] Overextended uptrend (gap > {MAX_EMA_GAP_DAYS} days). Trade aborted."
+                f"[!] Overextended uptrend (gap > {args.max_ema_gap} days). Trade aborted."
             )
         else:
             strategy_to_execute = "bull"
@@ -121,9 +174,9 @@ def main():
             # Condition 3: EMA20 gap (High < EMA20) continuous for > 20 days
             gap_streak = count_consecutive_true(df["High"] < df["EMA20"])
             print(f"[*] EMA Gap streak: {gap_streak} days.")
-            if gap_streak > MAX_EMA_GAP_DAYS:
+            if gap_streak > args.max_ema_gap:
                 print(
-                    f"[!] Overextended downtrend (gap > {MAX_EMA_GAP_DAYS} days). Trade aborted."
+                    f"[!] Overextended downtrend (gap > {args.max_ema_gap} days). Trade aborted."
                 )
             else:
                 strategy_to_execute = "bear"
@@ -149,7 +202,7 @@ def main():
     print("\n--- Connecting to IBKR ---")
     ib = IB()
     try:
-        ib.connect(IB_HOST, IB_PORT, clientId=CLIENT_ID)
+        ib.connect(args.ib_host, args.ib_port, clientId=args.client_id)
     except Exception as e:
         print(f"[-] Failed to connect to IBKR: {e}")
         sys.exit(1)
@@ -164,8 +217,8 @@ def main():
             iv=iv,
             risk_free_rate=risk_free_rate,
             option_type=option_type,
-            target_delta_abs=HIGH_DELTA_ABS,
-            dte_target=DTE_TARGET,
+            target_delta_abs=args.high_delta,
+            dte_target=args.dte_target,
         )
 
         buy_leg_info = finder.find_option(
@@ -174,19 +227,31 @@ def main():
             iv=iv,
             risk_free_rate=risk_free_rate,
             option_type=option_type,
-            target_delta_abs=LOW_DELTA_ABS,
-            dte_target=DTE_TARGET,
+            target_delta_abs=args.low_delta,
+            dte_target=args.dte_target,
         )
 
         if strategy_to_execute == "bull":
-            trader = BullPutSpreadTrader(ib)
+            trader = BullPutSpreadTrader(
+                ib,
+                walk_step=args.walk_step,
+                walk_interval=args.walk_interval,
+                min_credit=args.min_credit,
+                quantity=args.quantity,
+            )
             trader.execute(
                 ticker_symbol="XSP",
                 sell_put_info=sell_leg_info,
                 buy_put_info=buy_leg_info,
             )
         elif strategy_to_execute == "bear":
-            trader = BearCallSpreadTrader(ib)
+            trader = BearCallSpreadTrader(
+                ib,
+                walk_step=args.walk_step,
+                walk_interval=args.walk_interval,
+                min_credit=args.min_credit,
+                quantity=args.quantity,
+            )
             trader.execute(
                 ticker_symbol="XSP",
                 sell_call_info=sell_leg_info,

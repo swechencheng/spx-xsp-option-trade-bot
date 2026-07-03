@@ -118,6 +118,26 @@ You can manually run the bot at any time to evaluate the current market and exec
 venv/bin/python xsp_option_trade_bot.py
 ```
 
+You can customize the bot's behavior using command-line arguments. For example, to run on the live trading port with a custom quantity and credit threshold:
+
+```bash
+venv/bin/python xsp_option_trade_bot.py --ib-port 7496 --quantity 2 --min-credit 0.10
+```
+
+Available arguments (all default to the original strategy constants):
+
+- `--ib-host`: IBKR Host (default: 127.0.0.1)
+- `--ib-port`: IBKR Port (default: 7497)
+- `--client-id`: IBKR Client ID (default: 15)
+- `--high-delta`: Sell leg target delta (default: 0.20)
+- `--low-delta`: Buy leg target delta (default: 0.06)
+- `--dte-target`: Target days-to-expiration (default: 1)
+- `--max-ema-gap`: Max continuous days for EMA gap (default: 20)
+- `--walk-step`: Credit reduction per repricing round (default: 0.03)
+- `--walk-interval`: Seconds to wait between fill checks (default: 10)
+- `--min-credit`: Minimum acceptable net credit (default: 0.09)
+- `--quantity`: Number of spread contracts to trade (default: 1)
+
 ### Fully Automated Setup (macOS & Linux)
 
 To run the bot entirely hands-off every trading day at exactly **3:55 PM EST**, you can use the provided `bot_launcher.sh` script combined with `cron`. The launcher tracks the exact New York time internally, completely ignoring your local system timezone (perfect for travelers).

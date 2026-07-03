@@ -1,11 +1,5 @@
 from ib_async import IB, Option, Contract, ComboLeg, LimitOrder
 
-# ==================== Trading Configuration ====================
-WALK_STEP = 0.03  # Credit reduction per repricing round
-WALK_INTERVAL = 10  # Seconds to wait between fill checks
-MIN_CREDIT = 0.09  # Minimum acceptable net credit; cancel if breached
-QUANTITY = 1  # Number of spread contracts to trade
-
 
 class BaseCreditSpreadTrader:
     """Base Credit Spread Trading Executor (Walk-the-Book automatic repricing)
@@ -16,13 +10,24 @@ class BaseCreditSpreadTrader:
 
     Order Management:
       1. Submit BAG combo order with theoretical spread as initial Credit limit price
-      2. Check fill status every WALK_INTERVAL seconds
-      3. If not filled, reduce Credit by WALK_STEP and modify order
-      4. Repeat steps 2-3 until filled, or cancel order if Credit < MIN_CREDIT
+      2. Check fill status every interval seconds
+      3. If not filled, reduce Credit by walk step and modify order
+      4. Repeat steps 2-3 until filled, or cancel order if Credit < min credit
     """
 
-    def __init__(self, ib_client: IB):
+    def __init__(
+        self,
+        ib_client: IB,
+        walk_step: float = 0.03,
+        walk_interval: int = 10,
+        min_credit: float = 0.09,
+        quantity: int = 1,
+    ):
         self.ib = ib_client
+        self.walk_step = walk_step
+        self.walk_interval = walk_interval
+        self.min_credit = min_credit
+        self.quantity = quantity
 
     def execute_spread(
         self,
@@ -81,10 +86,10 @@ class BaseCreditSpreadTrader:
         )
         print(f"\n  Theoretical Credit: {initial_credit:.2f}")
 
-        if initial_credit < MIN_CREDIT:
+        if initial_credit < self.min_credit:
             print(
                 f"  ⚠ Theoretical Credit ({initial_credit:.2f}) is below minimum "
-                f"threshold ({MIN_CREDIT:.2f}), abandoning trade."
+                f"threshold ({self.min_credit:.2f}), abandoning trade."
             )
             return None
 
@@ -107,7 +112,7 @@ class BaseCreditSpreadTrader:
 
         order = LimitOrder(
             action="BUY",  # BAG Combo: BUY action = buy combo
-            totalQuantity=QUANTITY,
+            totalQuantity=self.quantity,
             lmtPrice=limit_price,
             tif="DAY",
         )
@@ -120,7 +125,7 @@ class BaseCreditSpreadTrader:
 
         # --- Walk-the-Book Loop ---
         while True:
-            self.ib.sleep(WALK_INTERVAL)
+            self.ib.sleep(self.walk_interval)
             self.ib.sleep(0.1)  # Extra tick to let status propagate
 
             status = trade.orderStatus.status
@@ -137,12 +142,12 @@ class BaseCreditSpreadTrader:
                 return None
 
             # Not filled -> reduce Credit and reprice
-            current_credit = round(current_credit - WALK_STEP, 2)
+            current_credit = round(current_credit - self.walk_step, 2)
 
-            if current_credit < MIN_CREDIT:
+            if current_credit < self.min_credit:
                 print(
                     f"  ⛔ Credit ({current_credit:.2f}) dropped below minimum"
-                    f" threshold ({MIN_CREDIT:.2f}), cancelling order."
+                    f" threshold ({self.min_credit:.2f}), cancelling order."
                 )
                 self.ib.cancelOrder(order)
                 self.ib.sleep(1)
