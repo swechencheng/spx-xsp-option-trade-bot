@@ -81,6 +81,7 @@ While highly probable, this strategy is not without risks. You must be aware of 
 - `xsp_option_finder_theory.py`: The quantitative engine. Implements the Black-Scholes math (Norm distributions, d1/d2) to find the exact strike prices that match the target 0.20/0.10 Deltas without relying on live IBKR market data subscriptions.
 - `xsp_option_trader.py`: The execution engine. Contains the `BaseCreditSpreadTrader` class, handling the IBKR asynchronous API, order creation, and the automated limit-price repricing loop.
 - `xsp_option_trade_bot.py`: The brain. Orchestrates the modules above, calculates the EMA20, evaluates the bullish/bearish rules, and makes the final decision to trade or abort.
+- `telegram_notifier.py`: Sends a Telegram message after every bot execution — regardless of outcome (trade filled, aborted, error). Reads credentials from `.tg_bot_secret.json`.
 - `bot_launcher.sh`: The automation wrapper that ensures the script executes exactly at 3:55 PM EST, regardless of the physical timezone of your computer.
 
 ---
@@ -105,6 +106,30 @@ pip install -r requirements.txt
 ```
 
 _Note: Ensure your TWS API settings have "Enable ActiveX and Socket Clients" checked._
+
+---
+
+## Telegram Notifications
+
+The bot sends a summary message to a Telegram chat after every execution — whether the trade was filled, aborted, or an error occurred.
+
+### Setup
+
+1. Create a Telegram bot via [@BotFather](https://t.me/BotFather) and obtain your **Bot Token**.
+2. Send a message to your bot and retrieve your **Chat ID** (you can use the `getUpdates` API or [@userinfobot](https://t.me/userinfobot)).
+3. Create a `.tg_bot_secret.json` file in the project root:
+
+   ```json
+   {
+     "telegram_bot_token": "YOUR_BOT_TOKEN",
+     "telegram_chat_id": "YOUR_CHAT_ID"
+   }
+   ```
+
+> [!CAUTION]
+> **Never commit** `.tg_bot_secret.json` to version control. It is already listed in `.gitignore`.
+
+If the secret file is missing or malformed, the bot will log a warning and continue operating normally — notifications will simply be skipped.
 
 ---
 

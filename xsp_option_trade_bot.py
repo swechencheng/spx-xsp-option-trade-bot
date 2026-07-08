@@ -1,5 +1,6 @@
 import sys
 import argparse
+import traceback
 from datetime import datetime
 import pytz
 import pandas as pd
@@ -9,6 +10,7 @@ from ib_async import IB
 from market_data_fetcher import MarketDataFetcher
 from xsp_option_finder_theory import OptionFinder
 from xsp_option_trader import BullPutSpreadTrader, BearCallSpreadTrader
+from telegram_notifier import TelegramNotifier
 
 
 def count_consecutive_true(series: pd.Series) -> int:
@@ -39,6 +41,24 @@ def is_valid_trading_day() -> bool:
     except Exception as e:
         print(f"[-] Error checking trading day: {e}")
         return False
+
+
+def _build_header(now_est: datetime) -> str:
+    """Build the common Telegram message header."""
+    return (
+        "🤖 <b>XSP Trading Bot Report</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📅 {now_est.strftime('%Y-%m-%d %H:%M %Z')}\n"
+    )
+
+
+def _build_market_section(today_close: float, today_ema20: float, regime: str) -> str:
+    """Build the market data section of the Telegram message."""
+    return (
+        f"📈 SPX Close: {today_close:.2f}\n"
+        f"📊 EMA20: {today_ema20:.2f}\n"
+        f"📌 Regime: {regime}\n"
+    )
 
 
 def main():
@@ -105,16 +125,39 @@ def main():
     )
 
     args = parser.parse_args()
+    now_est = datetime.now(pytz.timezone("US/Eastern"))
+
+    # Initialize Telegram notifier (never crashes on failure)
+    notifier = TelegramNotifier()
 
     print("=" * 60)
     print(f" XSP Automated Trading Bot - Started at {datetime.now()}")
     print("=" * 60)
 
+    try:
+        _run_strategy(args, now_est, notifier)
+    except Exception as e:
+        # Catch-all for any unexpected exception
+        tb = traceback.format_exc()
+        print(f"[!] Unexpected exception:\n{tb}")
+        msg = (
+            _build_header(now_est)
+            + "\n🔥 <b>UNEXPECTED EXCEPTION</b>\n"
+            + f"<pre>{tb[-500:]}</pre>"
+        )
+        notifier.send_message(msg)
+        sys.exit(1)
+
+
+def _run_strategy(args, now_est: datetime, notifier: TelegramNotifier):
+    """Core strategy logic, separated for clean error handling."""
+
     # 1. Validation: Ensure it's a trading day
     if not is_valid_trading_day():
-        print(
-            "[!] Today is not a valid trading day (market closed or holiday). Exiting."
-        )
+        reason = "Not a valid trading day (market closed or holiday)"
+        print(f"[!] {reason}. Exiting.")
+        msg = _build_header(now_est) + f"\n📅 <b>No Trade</b>\n{reason}"
+        notifier.send_message(msg)
         sys.exit(0)
 
     # 2. Fetch Market Data & Calculate EMA20
@@ -123,7 +166,10 @@ def main():
 
     df = fetcher.fetch_perfect_100_days("^SPX", "SPCFD:SPX")
     if df is None or df.empty:
-        print("[-] Failed to fetch 100 days of data. Exiting.")
+        reason = "Failed to fetch 100 days of market data"
+        print(f"[-] {reason}. Exiting.")
+        msg = _build_header(now_est) + f"\n❌ <b>Error</b>\n{reason}"
+        notifier.send_message(msg)
         sys.exit(1)
 
     # Calculate 20-day EMA
@@ -141,51 +187,61 @@ def main():
 
     # 3. Strategy Logic Evaluation
     strategy_to_execute = None
+    abort_reason = None
 
     if today_close > today_ema20:
         # Bull Put Credit Spread Candidate
+        regime = "Bullish"
         gap_streak = count_consecutive_true(df["Low"] > df["EMA20"])
         print(f"[*] Bullish Regime detected. EMA Gap streak: {gap_streak} days.")
 
         if gap_streak > args.max_ema_gap:
-            print(
-                f"[!] Overextended uptrend (gap > {args.max_ema_gap} days). Trade aborted."
+            abort_reason = (
+                f"Overextended uptrend (gap {gap_streak} > {args.max_ema_gap} days)"
             )
+            print(f"[!] {abort_reason}. Trade aborted.")
         else:
             strategy_to_execute = "bull"
 
     elif today_close < today_ema20:
         # Bear Call Credit Spread Candidate
+        regime = "Bearish"
         print("[*] Bearish Regime detected.")
 
-        # Condition 1: Must be below EMA20 for at least 1 day (yesterday was also below)
         if yesterday_close >= yesterday_ema20:
-            print(
-                "[!] Close just crossed below EMA20 today (no 1-day confirmation). Trade aborted."
+            abort_reason = (
+                "Close just crossed below EMA20 today (no 1-day confirmation)"
             )
+            print(f"[!] {abort_reason}. Trade aborted.")
 
-        # Condition 2: Not a bull bar (Close <= Open)
         elif today_close > today_open:
-            print(
-                f"[!] Today is a bull bar (Close {today_close:.2f} > Open {today_open:.2f}). Trade aborted."
+            abort_reason = (
+                f"Today is a bull bar (Close {today_close:.2f} > Open {today_open:.2f})"
             )
+            print(f"[!] {abort_reason}. Trade aborted.")
 
         else:
-            # Condition 3: EMA20 gap (High < EMA20) continuous for > 20 days
             gap_streak = count_consecutive_true(df["High"] < df["EMA20"])
             print(f"[*] EMA Gap streak: {gap_streak} days.")
             if gap_streak > args.max_ema_gap:
-                print(
-                    f"[!] Overextended downtrend (gap > {args.max_ema_gap} days). Trade aborted."
-                )
+                abort_reason = f"Overextended downtrend (gap {gap_streak} > {args.max_ema_gap} days)"
+                print(f"[!] {abort_reason}. Trade aborted.")
             else:
                 strategy_to_execute = "bear"
     else:
+        regime = "Neutral"
+        abort_reason = "Close equals EMA20 exactly — no trade signal"
         print("[-] Close equals EMA20 exactly. No trade executed.")
 
-    # 4. Execute Trade if conditions are met
+    # 4. If no valid setup, notify and exit
     if not strategy_to_execute:
         print("\n=== No valid trade setup today. Exiting cleanly. ===")
+        msg = (
+            _build_header(now_est)
+            + _build_market_section(today_close, today_ema20, regime)
+            + f"\n⚠️ <b>Trade Aborted</b>\n{abort_reason}"
+        )
+        notifier.send_message(msg)
         sys.exit(0)
 
     print(f"\n=== Executing {strategy_to_execute.upper()} strategy ===")
@@ -193,7 +249,14 @@ def main():
     # Get live VIX
     vix_data = fetcher.fetch_tradingview_live(tv_ticker="TVC:VIX")
     if vix_data is None:
-        print("[-] Failed to fetch live VIX data. Exiting.")
+        reason = "Failed to fetch live VIX data"
+        print(f"[-] {reason}. Exiting.")
+        msg = (
+            _build_header(now_est)
+            + _build_market_section(today_close, today_ema20, regime)
+            + f"\n❌ <b>Error</b>\n{reason}"
+        )
+        notifier.send_message(msg)
         sys.exit(1)
 
     xsp_spot = today_close / 10.0
@@ -204,12 +267,22 @@ def main():
     try:
         ib.connect(args.ib_host, args.ib_port, clientId=args.client_id)
     except Exception as e:
-        print(f"[-] Failed to connect to IBKR: {e}")
+        reason = f"Failed to connect to IBKR: {e}"
+        print(f"[-] {reason}")
+        msg = (
+            _build_header(now_est)
+            + _build_market_section(today_close, today_ema20, regime)
+            + f"\n❌ <b>Error</b>\n{reason}"
+        )
+        notifier.send_message(msg)
         sys.exit(1)
 
     try:
         finder = OptionFinder(ib)
         option_type = "P" if strategy_to_execute == "bull" else "C"
+        strategy_label = (
+            "Bull Put Spread" if strategy_to_execute == "bull" else "Bear Call Spread"
+        )
 
         sell_leg_info = finder.find_option(
             ticker_symbol="XSP",
@@ -239,7 +312,7 @@ def main():
                 min_credit=args.min_credit,
                 quantity=args.quantity,
             )
-            trader.execute(
+            trade = trader.execute(
                 ticker_symbol="XSP",
                 sell_put_info=sell_leg_info,
                 buy_put_info=buy_leg_info,
@@ -252,11 +325,43 @@ def main():
                 min_credit=args.min_credit,
                 quantity=args.quantity,
             )
-            trader.execute(
+            trade = trader.execute(
                 ticker_symbol="XSP",
                 sell_call_info=sell_leg_info,
                 buy_call_info=buy_leg_info,
             )
+
+        # Build trade result message
+        theo_credit = round(sell_leg_info["theo_price"] - buy_leg_info["theo_price"], 2)
+
+        legs_section = (
+            f"  Sell: XSP {sell_leg_info['strike']}{option_type}"
+            f" @ Δ{sell_leg_info['theo_delta']:.4f}\n"
+            f"  Buy:  XSP {buy_leg_info['strike']}{option_type}"
+            f" @ Δ{buy_leg_info['theo_delta']:.4f}\n"
+            f"  Theo Credit: ${theo_credit:.2f}\n"
+            f"  Qty: {args.quantity}\n"
+        )
+
+        if trade is not None:
+            fill_price = abs(trade.orderStatus.avgFillPrice)
+            msg = (
+                _build_header(now_est)
+                + _build_market_section(today_close, today_ema20, regime)
+                + f"\n✅ <b>{strategy_label} — FILLED</b>\n"
+                + f"<pre>{legs_section}"
+                + f"  Fill: ${fill_price:.2f}</pre>"
+            )
+        else:
+            msg = (
+                _build_header(now_est)
+                + _build_market_section(today_close, today_ema20, regime)
+                + f"\n⛔ <b>{strategy_label} — NOT FILLED</b>\n"
+                + f"<pre>{legs_section}</pre>"
+                + "Order cancelled (credit below minimum or rejected)."
+            )
+
+        notifier.send_message(msg)
 
     finally:
         ib.disconnect()
