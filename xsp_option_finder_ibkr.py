@@ -1,0 +1,172 @@
+import math
+import datetime
+from ib_async import IB, Index, Option
+
+# Import theoretical functions to find the strike efficiently
+# instead of paying $0.01 per strike to request market snapshots for the entire chain.
+from xsp_option_finder_theory import calculate_bs_delta, calculate_bs_price
+
+
+class OptionFinder:
+    """Finds the best-fit option contract for a given delta target using Market Data.
+
+    Uses IBKR's free reqSecDefOptParams to fetch the option chain structure.
+    Selects the strike based on theoretical delta. Once the optimal strike is found,
+    it requests a regulatory snapshot (NBBO) for that specific option contract to get
+    real-time market bid, ask, and mid prices.
+
+    Caveat: This OptionFinder cannot be used with Paper Account, you will get error:
+    "Error 10213, reqId x: API access is restricted on regulatory snapshot for XXX."
+
+    Returns:
+        dict with keys: strike, expiry, market_price, bid, ask, theo_price, theo_delta, option_type
+    """
+
+    def __init__(self, ib_client: IB):
+        self.ib = ib_client
+
+    def find_option(
+        self,
+        ticker_symbol: str,
+        xsp_spot: float,
+        iv: float,
+        risk_free_rate: float,
+        option_type: str,
+        target_delta_abs: float,
+        dte_target: int,
+    ) -> dict:
+        """Find the option strike closest to target_delta_abs for the nearest DTE.
+
+        Args:
+            ticker_symbol:    Underlying ticker (e.g., "XSP")
+            xsp_spot:         Current spot price of XSP
+            iv:               Implied volatility (decimal, e.g., 0.16 for 16%)
+            risk_free_rate:   Annualized risk-free rate (decimal)
+            option_type:      "P" for Put, "C" for Call
+            target_delta_abs: Absolute value of target delta (e.g., 0.20)
+            dte_target:       Target days-to-expiration
+
+        Returns:
+            dict: { "strike", "expiry", "market_price", "bid", "ask", "theo_price", "theo_delta", "option_type" }
+        """
+        print(
+            f"\n--- Finding optimal {ticker_symbol} market option"
+            f" ({option_type} | Target Delta: {target_delta_abs} | {dte_target}DTE) ---"
+        )
+
+        contract = Index(ticker_symbol, "CBOE")
+        self.ib.qualifyContracts(contract)
+        chains = self.ib.reqSecDefOptParams(
+            contract.symbol, "", contract.secType, contract.conId
+        )
+        cboe_chain = next(c for c in chains if c.exchange == "CBOE")
+
+        today = datetime.date.today()
+        valid_expirations = sorted(
+            [
+                exp
+                for exp in cboe_chain.expirations
+                if datetime.datetime.strptime(exp, "%Y%m%d").date() >= today
+            ]
+        )
+
+        target_idx = min(dte_target, len(valid_expirations) - 1)
+        selected_expiry = valid_expirations[target_idx]
+
+        trading_days_left = target_idx
+        T = max(trading_days_left, 1) / 252.0
+        print(
+            f"Locked expiration: {selected_expiry} ({trading_days_left} trading days from now, T={T:.4f})"
+        )
+
+        target_signed_delta = (
+            target_delta_abs if option_type.upper() == "C" else -target_delta_abs
+        )
+
+        best_strike = None
+        min_delta_error = float("inf")
+        best_theo_delta = 0.0
+
+        for strike in sorted(cboe_chain.strikes):
+            if abs(strike - xsp_spot) > (xsp_spot * 0.15):
+                continue
+            if strike % 1 != 0:
+                continue
+
+            calc_delta = calculate_bs_delta(
+                xsp_spot, strike, T, risk_free_rate, iv, option_type
+            )
+            error = abs(calc_delta - target_signed_delta)
+
+            if error < min_delta_error:
+                min_delta_error = error
+                best_strike = strike
+                best_theo_delta = calc_delta
+
+        print(
+            f"Best strike found: [{best_strike}]"
+            f" (Theo Delta: {best_theo_delta:.4f} vs Target: {target_signed_delta})"
+        )
+
+        theo_price = calculate_bs_price(
+            xsp_spot, best_strike, T, risk_free_rate, iv, option_type
+        )
+
+        # Build the Option contract to fetch market data
+        opt_contract = Option(
+            symbol=ticker_symbol,
+            lastTradeDateOrContractMonth=selected_expiry,
+            strike=best_strike,
+            right=option_type,
+            exchange="CBOE",
+            currency="USD",
+        )
+        self.ib.qualifyContracts(opt_contract)
+
+        print(f"  Requesting regulatory snapshot for {opt_contract.localSymbol}...")
+
+        # Request regulatory snapshot (costs $0.01 per request, provides NBBO)
+        ticker = self.ib.reqMktData(
+            opt_contract, genericTickList="", snapshot=False, regulatorySnapshot=True
+        )
+
+        # Wait until bid/ask data is available (can take a few seconds)
+        timeout = 10.0
+        elapsed = 0.0
+        while (math.isnan(ticker.bid) or math.isnan(ticker.ask)) and elapsed < timeout:
+            self.ib.sleep(0.1)
+            elapsed += 0.1
+
+        # Fallbacks for missing data
+        bid = ticker.bid if not math.isnan(ticker.bid) else 0.0
+        ask = ticker.ask if not math.isnan(ticker.ask) else 0.0
+
+        # Calculate mid-price or fallback
+        if bid > 0 and ask > 0:
+            market_price = (bid + ask) / 2.0
+        elif bid > 0:
+            market_price = bid
+        elif ask > 0:
+            market_price = ask
+        else:
+            market_price = (
+                ticker.markPrice if not math.isnan(ticker.markPrice) else theo_price
+            )
+
+        print(f"  Model Theoretical Price: {theo_price:.2f}")
+        print(
+            f"  Snapshot Market Price: {market_price:.2f} (Bid: {bid:.2f}, Ask: {ask:.2f})"
+        )
+
+        # TODO fix the compatibility issue to switch between theo_price and market_price.
+        # So that downstream code like BaseCreditSpreadTrader works out-of-the-box using the market price.
+        return {
+            "strike": best_strike,
+            "expiry": selected_expiry,
+            "theo_price": theo_price,
+            "market_price": market_price,
+            "bid": bid,
+            "ask": ask,
+            "theo_delta": best_theo_delta,
+            "option_type": option_type,
+        }
