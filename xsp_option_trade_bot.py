@@ -8,7 +8,8 @@ import yfinance as yf
 from ib_async import IB
 
 from market_data_fetcher import MarketDataFetcher
-from xsp_option_finder_theory import OptionFinder
+from xsp_option_finder_theory import OptionFinder as TheoryOptionFinder
+from xsp_option_finder_ibkr import OptionFinder as IbkrOptionFinder
 from xsp_option_trader import BullPutSpreadTrader, BearCallSpreadTrader
 from telegram_notifier import TelegramNotifier
 
@@ -122,6 +123,11 @@ def main():
         type=int,
         default=1,
         help="Number of spread contracts to trade (default: 1)",
+    )
+    parser.add_argument(
+        "--ib-market",
+        action="store_true",
+        help="Use IBKR market data for option pricing instead of theory",
     )
 
     args = parser.parse_args()
@@ -278,7 +284,11 @@ def _run_strategy(args, now_est: datetime, notifier: TelegramNotifier):
         sys.exit(1)
 
     try:
-        finder = OptionFinder(ib)
+        if args.ib_market:
+            finder = IbkrOptionFinder(ib)
+        else:
+            finder = TheoryOptionFinder(ib)
+
         option_type = "P" if strategy_to_execute == "bull" else "C"
         strategy_label = (
             "Bull Put Spread" if strategy_to_execute == "bull" else "Bear Call Spread"
@@ -303,6 +313,11 @@ def _run_strategy(args, now_est: datetime, notifier: TelegramNotifier):
             target_delta_abs=args.low_delta,
             dte_target=args.dte_target,
         )
+
+        if args.ib_market:
+            # Overwrite 'theo_price' with 'market_price' so trader module uses market pricing seamlessly
+            sell_leg_info["theo_price"] = sell_leg_info["market_price"]
+            buy_leg_info["theo_price"] = buy_leg_info["market_price"]
 
         if strategy_to_execute == "bull":
             trader = BullPutSpreadTrader(
@@ -332,14 +347,15 @@ def _run_strategy(args, now_est: datetime, notifier: TelegramNotifier):
             )
 
         # Build trade result message
-        theo_credit = round(sell_leg_info["theo_price"] - buy_leg_info["theo_price"], 2)
+        credit_label = "Market Credit" if args.ib_market else "Theo Credit"
+        credit_val = round(sell_leg_info["theo_price"] - buy_leg_info["theo_price"], 2)
 
         legs_section = (
             f"  Sell: XSP {sell_leg_info['strike']}{option_type}"
             f" @ Δ{sell_leg_info['theo_delta']:.4f}\n"
             f"  Buy:  XSP {buy_leg_info['strike']}{option_type}"
             f" @ Δ{buy_leg_info['theo_delta']:.4f}\n"
-            f"  Theo Credit: ${theo_credit:.2f}\n"
+            f"  {credit_label}: ${credit_val:.2f}\n"
             f"  Qty: {args.quantity}\n"
         )
 
