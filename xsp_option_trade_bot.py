@@ -8,7 +8,11 @@ import yfinance as yf
 from ib_async import IB
 
 from market_data_fetcher import MarketDataFetcher
-from xsp_option_finder_theory import OptionFinder as TheoryOptionFinder
+from xsp_option_finder_theory import (
+    OptionFinder as TheoryOptionFinder,
+    calculate_bs_price,
+    calculate_bs_delta,
+)
 from xsp_option_finder_ibkr import OptionFinder as IbkrOptionFinder
 from xsp_option_trader import BullPutSpreadTrader, BearCallSpreadTrader
 from telegram_notifier import TelegramNotifier
@@ -83,12 +87,6 @@ def main():
         help="Sell leg target delta (default: 0.20)",
     )
     parser.add_argument(
-        "--low-delta",
-        type=float,
-        default=0.06,
-        help="Buy leg target delta (default: 0.06)",
-    )
-    parser.add_argument(
         "--dte-target",
         type=int,
         default=1,
@@ -103,8 +101,8 @@ def main():
     parser.add_argument(
         "--walk-step",
         type=float,
-        default=0.03,
-        help="Credit reduction per repricing round (default: 0.03)",
+        default=0.01,
+        help="Credit reduction per repricing round (default: 0.01)",
     )
     parser.add_argument(
         "--walk-interval",
@@ -304,20 +302,48 @@ def _run_strategy(args, now_est: datetime, notifier: TelegramNotifier):
             dte_target=args.dte_target,
         )
 
-        buy_leg_info = finder.find_option(
-            ticker_symbol="XSP",
-            xsp_spot=xsp_spot,
-            iv=iv,
-            risk_free_rate=risk_free_rate,
-            option_type=option_type,
-            target_delta_abs=args.low_delta,
-            dte_target=args.dte_target,
-        )
-
         if args.ib_market:
             # Overwrite 'theo_price' with 'market_price' so trader module uses market pricing seamlessly
             sell_leg_info["theo_price"] = sell_leg_info["market_price"]
-            buy_leg_info["theo_price"] = buy_leg_info["market_price"]
+
+        # Buy leg = one strike step away from sell leg (1-wide spread)
+        # Puts: buy a lower strike put (further OTM protection)
+        # Calls: buy a higher strike call (further OTM protection)
+        buy_strike = sell_leg_info["strike"] + (-1 if option_type == "P" else 1)
+
+        # Calculate real theoretical price and delta for the buy leg
+        T = max(args.dte_target, 1) / 252.0
+        buy_theo_price = calculate_bs_price(
+            xsp_spot, buy_strike, T, risk_free_rate, iv, option_type
+        )
+        buy_theo_delta = calculate_bs_delta(
+            xsp_spot, buy_strike, T, risk_free_rate, iv, option_type
+        )
+
+        buy_leg_info = {
+            "strike": buy_strike,
+            "expiry": sell_leg_info["expiry"],
+            "theo_price": buy_theo_price,
+            "theo_delta": buy_theo_delta,
+            "option_type": option_type,
+        }
+
+        if args.ib_market:
+            # Fetch real market price for the buy leg via regulatory snapshot
+            buy_market = finder.fetch_market_price(
+                ticker_symbol="XSP",
+                expiry=sell_leg_info["expiry"],
+                strike=buy_strike,
+                option_type=option_type,
+                theo_price_fallback=buy_theo_price,
+            )
+            buy_leg_info["theo_price"] = buy_market["market_price"]
+
+        print(
+            f"\n--- Buy leg: 1-wide offset ---\n"
+            f"  Sell strike: {sell_leg_info['strike']} | Buy strike: {buy_strike}\n"
+            f"  Buy Theo Price: {buy_theo_price:.2f} | Buy Theo Delta: {buy_theo_delta:.4f}"
+        )
 
         if strategy_to_execute == "bull":
             trader = BullPutSpreadTrader(

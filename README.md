@@ -5,7 +5,7 @@
 
 An end-to-end automated trading bot for Interactive Brokers (IBKR) that trades next-day (1DTE) Credit Spreads on the XSP (Mini-SPX) index.
 
-This bot analyzes live market data, calculates theoretical option prices using the Black-Scholes model, automatically identifies the optimal strike prices based on target deltas, and executes trades using a "Walk-the-Book" algorithm to ensure the best possible fill price.
+This bot analyzes live market data, calculates theoretical option prices using the Black-Scholes model, automatically identifies the optimal sell strike based on target delta, and constructs a 1-wide credit spread by placing the buy leg one strike away from the sell leg. It then executes the trade using a "Walk-the-Book" algorithm to ensure the best possible fill price.
 
 ## Table of Contents
 
@@ -43,13 +43,13 @@ When a valid trend is detected, the bot performs the following steps:
 1. **Live Data Fetching**: Pulls high-precision live SPX and VIX snapshots from TradingView and combines them with historical data from Yahoo Finance.
 2. **Option Discovery (Black-Scholes)**: Instead of requesting delayed option chains from IBKR, the bot uses the live VIX and SPX prices to calculate theoretical option prices using the Black-Scholes equation. It scans the theoretical chain to find:
    - A "Sell" leg with an absolute Delta of **0.20**
-   - A "Buy" leg with an absolute Delta of **0.10**
+   - A "Buy" leg placed **one strike ($1) away** from the sell leg, creating a 1-wide spread
    - **Holiday-Aware Expiration Selection**: Instead of blindly adding calendar days, the bot downloads the list of live expirations directly from CBOE and sorts them. This allows it to perfectly calculate the next _trading day_ for 1DTE expirations, automatically skipping weekends and exchange holidays.
 3. **Execution (Walk the Book)**:
    - The bot connects to the IBKR TWS/Gateway API.
    - It constructs a `BAG` combo order (a multi-leg spread).
    - It submits an initial Limit Order at the theoretical mid-price (maximizing credit).
-   - If the order isn't filled within 5 seconds, it automatically cancels, reduces the credit required by $0.03, and resubmits. This "Walk the Book" process repeats until the order fills or the credit drops below the minimum acceptable threshold ($0.09).
+   - If the order isn't filled within 5 seconds, it automatically cancels, reduces the credit required by $0.01, and resubmits. This "Walk the Book" process repeats until the order fills or the credit drops below the minimum acceptable threshold ($0.09).
 
 ---
 
@@ -60,7 +60,7 @@ This strategy relies on the core mathematical advantages of option selling:
 1. **High Probability of Success**: By selling options at the 0.20 Delta, there is an approximate **80% statistical probability** that the sold option will expire Out-Of-The-Money (OOTM) and be completely worthless.
 2. **Rapid Theta Decay**: Trading options close to expiration (1DTE) means that the time value of the option decays exponentially fast.
 3. **Trend Following**: By filtering trades using the EMA20, the bot ensures you are always trading _with_ the broader market momentum. You are placing bets that the market will not sharply reverse against the current short-term trend.
-4. **Defined Risk**: Buying the 0.10 Delta option creates a "Credit Spread." This caps your maximum potential loss in the event of a black swan market crash, making the strategy highly capital efficient.
+4. **Defined Risk**: Buying the option one strike away from the sell leg creates a tight 1-wide "Credit Spread." This caps your maximum potential loss to just $1 per spread (minus the credit received), making the strategy highly capital efficient.
 
 ---
 
@@ -71,14 +71,14 @@ While highly probable, this strategy is not without risks. You must be aware of 
 1. **Sharp Mean Reversions (Whipsaws)**: The strategy uses the EMA20 to trade _with_ the trend. If the market is chopping sideways or experiences a violent intraday reversal (e.g., a sudden 1-2% drop after an uptrend), the underlying index can quickly crash through your short strike.
 2. **High Gamma (Pin Risk)**: Short-duration options (1DTE) have extremely high Gamma. This means that if the index gets close to your strike price on expiration day, the delta will change very rapidly. A small index movement can instantly turn a safe position into a max-loss position.
 3. **Overnight Gap Risk**: Because the strategy executes at 3:55 PM for expiration on the next trading day, holding the position overnight exposes you to gap risk. Unforeseen macroeconomic news (CPI drops, Fed announcements, or geopolitical events) can cause the market to gap open the next morning far past your strike prices, leaving no room to manage the trade.
-4. **Asymmetric Risk/Reward**: Because you are trading high-probability setups (selling 0.20 Deltas), the premium you collect is small relative to the maximum possible loss (the distance between your spread strikes). A single max-loss event can wipe out the profits of several successful trades.
+4. **Asymmetric Risk/Reward**: Because you are trading high-probability setups (selling 0.20 Deltas) with tight 1-wide spreads, the premium you collect is small relative to the maximum possible loss ($1 spread width). A single max-loss event can wipe out the profits of several successful trades.
 
 ---
 
 ## Architecture & Modules
 
 - `market_data_fetcher.py`: Handles data ingestion. Scrapes real-time snapshot data from TradingView and merges it with historical YFinance data to create a perfect 100-day OHLC dataset.
-- `xsp_option_finder_theory.py`: The quantitative engine. Implements the Black-Scholes math (Norm distributions, d1/d2) to find the exact strike prices that match the target 0.20/0.10 Deltas without relying on live IBKR market data subscriptions.
+- `xsp_option_finder_theory.py`: The quantitative engine. Implements the Black-Scholes math (Norm distributions, d1/d2) to find the exact sell-leg strike price that matches the target 0.20 Delta without relying on live IBKR market data subscriptions. The buy leg is then placed one strike away.
 - `xsp_option_trader.py`: The execution engine. Contains the `BaseCreditSpreadTrader` class, handling the IBKR asynchronous API, order creation, and the automated limit-price repricing loop.
 - `xsp_option_trade_bot.py`: The brain. Orchestrates the modules above, calculates the EMA20, evaluates the bullish/bearish rules, and makes the final decision to trade or abort.
 - `telegram_notifier.py`: Sends a Telegram message after every bot execution — regardless of outcome (trade filled, aborted, error). Reads credentials from `.tg_bot_secret.json`.
@@ -155,10 +155,9 @@ Available arguments (all default to the original strategy constants):
 - `--ib-port`: IBKR Port (default: 7497)
 - `--client-id`: IBKR Client ID (default: 15)
 - `--high-delta`: Sell leg target delta (default: 0.20)
-- `--low-delta`: Buy leg target delta (default: 0.06)
 - `--dte-target`: Target days-to-expiration (default: 1)
 - `--max-ema-gap`: Max continuous days for EMA gap (default: 20)
-- `--walk-step`: Credit reduction per repricing round (default: 0.03)
+- `--walk-step`: Credit reduction per repricing round (default: 0.01)
 - `--walk-interval`: Seconds to wait between fill checks (default: 10)
 - `--min-credit`: Minimum acceptable net credit (default: 0.09)
 - `--quantity`: Number of spread contracts to trade (default: 1)
