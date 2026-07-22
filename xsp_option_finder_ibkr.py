@@ -170,3 +170,67 @@ class OptionFinder:
             "theo_delta": best_theo_delta,
             "option_type": option_type,
         }
+
+    def fetch_market_price(
+        self,
+        ticker_symbol: str,
+        expiry: str,
+        strike: float,
+        option_type: str,
+        theo_price_fallback: float = 0.0,
+    ) -> dict:
+        """Fetch NBBO market price for a specific option contract via regulatory snapshot.
+
+        Args:
+            ticker_symbol:       Underlying ticker (e.g., "XSP")
+            expiry:              Expiration date string (YYYYMMDD)
+            strike:              Option strike price
+            option_type:         "P" for Put, "C" for Call
+            theo_price_fallback: Fallback price if market data is unavailable
+
+        Returns:
+            dict: { "market_price", "bid", "ask" }
+        """
+        opt_contract = Option(
+            symbol=ticker_symbol,
+            lastTradeDateOrContractMonth=expiry,
+            strike=strike,
+            right=option_type,
+            exchange="CBOE",
+            currency="USD",
+        )
+        self.ib.qualifyContracts(opt_contract)
+
+        print(f"  Requesting regulatory snapshot for {opt_contract.localSymbol}...")
+
+        ticker = self.ib.reqMktData(
+            opt_contract, genericTickList="", snapshot=False, regulatorySnapshot=True
+        )
+
+        timeout = 10.0
+        elapsed = 0.0
+        while (math.isnan(ticker.bid) or math.isnan(ticker.ask)) and elapsed < timeout:
+            self.ib.sleep(0.1)
+            elapsed += 0.1
+
+        bid = ticker.bid if not math.isnan(ticker.bid) else 0.0
+        ask = ticker.ask if not math.isnan(ticker.ask) else 0.0
+
+        if bid > 0 and ask > 0:
+            market_price = (bid + ask) / 2.0
+        elif bid > 0:
+            market_price = bid
+        elif ask > 0:
+            market_price = ask
+        else:
+            market_price = (
+                ticker.markPrice
+                if not math.isnan(ticker.markPrice)
+                else theo_price_fallback
+            )
+
+        print(
+            f"  Snapshot Market Price: {market_price:.2f} (Bid: {bid:.2f}, Ask: {ask:.2f})"
+        )
+
+        return {"market_price": market_price, "bid": bid, "ask": ask}

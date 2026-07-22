@@ -5,8 +5,8 @@ class BaseCreditSpreadTrader:
     """Base Credit Spread Trading Executor (Walk-the-Book automatic repricing)
 
     Strategy Structure:
-      SELL High Delta Option (Collect Premium) + BUY Low Delta Option (Pay Premium)
-      Net Effect = Receive Credit (Net Premium)
+      SELL Delta-targeted Option (Collect Premium) + BUY 1-strike-away Option (Pay Premium)
+      Net Effect = Receive Credit (Net Premium) on a 1-wide spread
 
     Order Management:
       1. Submit BAG combo order with theoretical spread as initial Credit limit price
@@ -18,7 +18,7 @@ class BaseCreditSpreadTrader:
     def __init__(
         self,
         ib_client: IB,
-        walk_step: float = 0.03,
+        walk_step: float = 0.01,
         walk_interval: int = 10,
         min_credit: float = 0.09,
         quantity: int = 1,
