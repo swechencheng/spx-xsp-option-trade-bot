@@ -212,13 +212,7 @@ def _run_strategy(args, now_est: datetime, notifier: TelegramNotifier):
         regime = "Bearish"
         print("[*] Bearish Regime detected.")
 
-        if yesterday_close >= yesterday_ema20:
-            abort_reason = (
-                "Close just crossed below EMA20 today (no 1-day confirmation)"
-            )
-            print(f"[!] {abort_reason}. Trade aborted.")
-
-        elif today_close > today_open:
+        if today_close > today_open:
             abort_reason = (
                 f"Today is a bull bar (Close {today_close:.2f} > Open {today_open:.2f})"
             )
