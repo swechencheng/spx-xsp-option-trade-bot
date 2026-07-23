@@ -26,7 +26,7 @@ The bot runs on a daily schedule, specifically timed for **3:55 PM EST** (just b
 Depending on the market regime, it executes one of two strategies:
 
 1. **Bullish Regime (Close > EMA20)**: Executes a **Bull Put Credit Spread**.
-2. **Bearish Regime (Close < EMA20)**: Executes a **Bear Call Credit Spread**.
+2. **Bearish Regime (Close < EMA20)**: Executes a **Bear Call Credit Spread** _(disabled by default; enable with `--add-bear`)_.
 
 The bot is strictly defensive. It will **abort** the trade under the following conditions:
 
@@ -161,6 +161,7 @@ Available arguments (all default to the original strategy constants):
 - `--walk-interval`: Seconds to wait between fill checks (default: 10)
 - `--min-credit`: Minimum acceptable net credit (default: 0.09)
 - `--quantity`: Number of spread contracts to trade (default: 1)
+- `--add-bear`: Enable Bear Call Credit Spreads (disabled by default)
 
 ### Fully Automated Setup (macOS & Linux)
 

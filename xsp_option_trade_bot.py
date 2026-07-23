@@ -127,6 +127,11 @@ def main():
         action="store_true",
         help="Use IBKR market data for option pricing instead of theory",
     )
+    parser.add_argument(
+        "--add-bear",
+        action="store_true",
+        help="Enable Bear Call Credit Spreads (disabled by default)",
+    )
 
     args = parser.parse_args()
     now_est = datetime.now(pytz.timezone("US/Eastern"))
@@ -212,7 +217,11 @@ def _run_strategy(args, now_est: datetime, notifier: TelegramNotifier):
         regime = "Bearish"
         print("[*] Bearish Regime detected.")
 
-        if today_close > today_open:
+        if not args.add_bear:
+            abort_reason = "Bear Call Spread disabled (use --add-bear to enable)"
+            print(f"[!] {abort_reason}. Trade aborted.")
+
+        elif today_close > today_open:
             abort_reason = (
                 f"Today is a bull bar (Close {today_close:.2f} > Open {today_open:.2f})"
             )
