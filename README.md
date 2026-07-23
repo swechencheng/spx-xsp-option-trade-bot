@@ -31,7 +31,7 @@ Depending on the market regime, it executes one of two strategies:
 The bot is strictly defensive. It will **abort** the trade under the following conditions:
 
 - **Overextended Trends**: If the price has gapped completely above or below the EMA20 for more than 20 consecutive days, the bot pauses trading to avoid mean-reversion whipsaws.
-- **False Breakouts**: For a bearish setup, the price must have been below the EMA20 for at least one full prior day, and the current daily bar cannot be bullish (`Close > Open`).
+- **Bull Bar Filter**: For a bearish setup, the current daily bar cannot be bullish (`Close > Open`).
 - **Non-Trading Days**: The bot uses Yahoo Finance to verify if the current date is a valid US trading day. If it's a weekend or holiday, it gracefully exits.
 
 ---
