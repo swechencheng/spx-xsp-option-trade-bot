@@ -12,6 +12,7 @@ This bot analyzes live market data, calculates theoretical option prices using t
 - [How It Works](#how-it-works)
 - [The Mechanism](#the-mechanism)
 - [Why Is This Strategy Profitable?](#why-is-this-strategy-profitable)
+- [Backtest Results (2020–2025)](#backtest-results-20202025)
 - [Architecture & Modules](#architecture--modules)
 - [Installation & Setup](#installation--setup)
 - [Usage & Automation](#usage--automation)
@@ -72,6 +73,35 @@ While highly probable, this strategy is not without risks. You must be aware of 
 2. **High Gamma (Pin Risk)**: Short-duration options (1DTE) have extremely high Gamma. This means that if the index gets close to your strike price on expiration day, the delta will change very rapidly. A small index movement can instantly turn a safe position into a max-loss position.
 3. **Overnight Gap Risk**: Because the strategy executes at 3:55 PM for expiration on the next trading day, holding the position overnight exposes you to gap risk. Unforeseen macroeconomic news (CPI drops, Fed announcements, or geopolitical events) can cause the market to gap open the next morning far past your strike prices, leaving no room to manage the trade.
 4. **Asymmetric Risk/Reward**: Because you are trading high-probability setups (selling 0.20 Deltas) with tight 1-wide spreads, the premium you collect is small relative to the maximum possible loss ($1 spread width). A single max-loss event can wipe out the profits of several successful trades.
+
+---
+
+## Backtest Results (2020–2025)
+
+We backtested the core assumption of this strategy against **1,507 trading days** of SPX daily data from January 2020 to December 2025. The test checks whether, given the EMA20 regime on day _i_, the index stays within a **50-point buffer** on day _i+1_ — simulating whether a 0.20 Delta credit spread (approximately 50 SPX points OTM) would have expired safely.
+
+### Bullish Regime (Close > EMA20)
+
+| Period    | Total Signals | ✅ Pass | ❌ Fail | Win Rate  |
+| --------- | :-----------: | :-----: | :-----: | :-------: |
+| 2020–2025 |     1,044     |   956   |   88    | **91.6%** |
+| 2025 only |      180      |   165   |   15    | **91.7%** |
+
+### Bearish Regime (Close < EMA20)
+
+We tested three variants of the bearish entry filter:
+
+| Variant                                  | Signals | ✅ Pass | ❌ Fail | Win Rate |
+| ---------------------------------------- | :-----: | :-----: | :-----: | :------: |
+| Simple (Close < EMA20 only)              |   462   |   346   |   116   |  74.9%   |
+| Bear bar (+ Close < Open)                |   289   |   218   |   71    |  75.4%   |
+| Strict (+ bear bar + 1-day confirmation) |   209   |   151   |   58    |  72.2%   |
+
+### Conclusion
+
+The bullish side delivers a consistent **~92% win rate** across all time scales, making it a reliable default strategy. The bearish side, regardless of filtering, tops out at **~75%** — significantly lower and more exposed to sharp bounce-back rallies (e.g., April 2025 tariff reversal: +424 points overnight). Adding stricter filters reduces signal count without meaningfully improving the win rate.
+
+For this reason, the bot **defaults to Bull Put Spreads only**. Bear Call Spreads can be enabled with the `--add-bear` flag for users who accept the lower win probability.
 
 ---
 
