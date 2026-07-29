@@ -84,7 +84,13 @@ def main():
         "--high-delta",
         type=float,
         default=0.20,
-        help="Sell leg target delta (default: 0.20)",
+        help="Sell leg target delta for Bull Put Spread (default: 0.20)",
+    )
+    parser.add_argument(
+        "--low-delta",
+        type=float,
+        default=0.09,
+        help="Sell leg target delta for Bear Call Spread (default: 0.09)",
     )
     parser.add_argument(
         "--dte-target",
@@ -295,13 +301,17 @@ def _run_strategy(args, now_est: datetime, notifier: TelegramNotifier):
             "Bull Put Spread" if strategy_to_execute == "bull" else "Bear Call Spread"
         )
 
+        target_delta = (
+            args.low_delta if strategy_to_execute == "bear" else args.high_delta
+        )
+
         sell_leg_info = finder.find_option(
             ticker_symbol="XSP",
             xsp_spot=xsp_spot,
             iv=iv,
             risk_free_rate=risk_free_rate,
             option_type=option_type,
-            target_delta_abs=args.high_delta,
+            target_delta_abs=target_delta,
             dte_target=args.dte_target,
         )
 
