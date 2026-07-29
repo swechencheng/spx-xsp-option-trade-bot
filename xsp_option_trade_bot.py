@@ -81,13 +81,13 @@ def main():
         "--client-id", type=int, default=15, help="IBKR Client ID (default: 15)"
     )
     parser.add_argument(
-        "--high-delta",
+        "--bull-delta",
         type=float,
         default=0.20,
         help="Sell leg target delta for Bull Put Spread (default: 0.20)",
     )
     parser.add_argument(
-        "--low-delta",
+        "--bear-delta",
         type=float,
         default=0.09,
         help="Sell leg target delta for Bear Call Spread (default: 0.09)",
@@ -302,7 +302,7 @@ def _run_strategy(args, now_est: datetime, notifier: TelegramNotifier):
         )
 
         target_delta = (
-            args.low_delta if strategy_to_execute == "bear" else args.high_delta
+            args.bear_delta if strategy_to_execute == "bear" else args.bull_delta
         )
 
         sell_leg_info = finder.find_option(
