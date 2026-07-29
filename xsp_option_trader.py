@@ -116,6 +116,8 @@ class BaseCreditSpreadTrader:
             lmtPrice=limit_price,
             tif="DAY",
         )
+        order.transmit = True
+        order.overridePercentageConstraints = True
 
         trade = self.ib.placeOrder(combo, order)
         print(
