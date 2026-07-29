@@ -17,5 +17,5 @@ fi
 if [ "$EST_HOUR" -eq 15 ] && [ "$EST_MIN" -eq 55 ]; then
     echo "$(date): Time matched 15:55 EST. Starting trading bot..."
     # Execute the python bot using relative paths
-    venv/bin/python xsp_option_trade_bot.py --ib-port 4002 --walk-interval 5
+    venv/bin/python xsp_option_trade_bot.py --add-bear --ib-port 4002 --walk-interval 5
 fi
