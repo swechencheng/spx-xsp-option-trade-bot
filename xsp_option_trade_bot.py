@@ -12,6 +12,7 @@ from xsp_option_finder_theory import (
     OptionFinder as TheoryOptionFinder,
     calculate_bs_price,
     calculate_bs_delta,
+    calculate_trading_time_t,
 )
 from xsp_option_finder_ibkr import OptionFinder as IbkrOptionFinder
 from xsp_option_trader import BullPutSpreadTrader, BearCallSpreadTrader
@@ -325,7 +326,7 @@ def _run_strategy(args, now_est: datetime, notifier: TelegramNotifier):
         buy_strike = sell_leg_info["strike"] + (-1 if option_type == "P" else 1)
 
         # Calculate real theoretical price and delta for the buy leg
-        T = max(args.dte_target, 1) / 252.0
+        T = calculate_trading_time_t(sell_leg_info["expiry"])
         buy_theo_price = calculate_bs_price(
             xsp_spot, buy_strike, T, risk_free_rate, iv, option_type
         )

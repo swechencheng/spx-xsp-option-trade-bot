@@ -4,7 +4,11 @@ from ib_async import IB, Index, Option
 
 # Import theoretical functions to find the strike efficiently
 # instead of paying $0.01 per strike to request market snapshots for the entire chain.
-from xsp_option_finder_theory import calculate_bs_delta, calculate_bs_price
+from xsp_option_finder_theory import (
+    calculate_bs_delta,
+    calculate_bs_price,
+    calculate_trading_time_t,
+)
 
 
 class OptionFinder:
@@ -73,8 +77,7 @@ class OptionFinder:
         target_idx = min(dte_target, len(valid_expirations) - 1)
         selected_expiry = valid_expirations[target_idx]
 
-        trading_days_left = target_idx
-        T = max(trading_days_left, 1) / 252.0
+        T = calculate_trading_time_t(selected_expiry)
         print(
             f"Locked expiration: {selected_expiry} ({trading_days_left} trading days from now, T={T:.4f})"
         )
