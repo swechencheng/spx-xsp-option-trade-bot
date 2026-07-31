@@ -3,12 +3,53 @@ import datetime
 import warnings
 from scipy.stats import norm
 from ib_async import IB, Index
+import pytz
 
 # Suppress yfinance timezone warnings to keep console clean
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 
 # ==================== Option Calculation Core ====================
+def calculate_trading_time_t(exp_date_str: str) -> float:
+    """Calculate T for Black-Scholes using exact trading minutes remaining (US/Eastern)."""
+    eastern = pytz.timezone("US/Eastern")
+    now_utc = datetime.datetime.now(pytz.utc)
+    now_local = now_utc.astimezone(eastern)
+
+    exp_date = datetime.datetime.strptime(exp_date_str, "%Y%m%d").date()
+
+    # If already expired
+    if exp_date < now_local.date():
+        return 1.0 / (252 * 6.75 * 60.0)  # Prevent div by zero
+
+    def get_trading_minutes_left_today(dt: datetime.datetime) -> float:
+        market_open = dt.replace(hour=9, minute=30, second=0, microsecond=0)
+        market_close = dt.replace(hour=16, minute=15, second=0, microsecond=0)
+
+        if dt < market_open:
+            return 6.75 * 60.0
+        elif dt >= market_close:
+            return 0.0
+        else:
+            diff = market_close - dt
+            return diff.total_seconds() / 60.0
+
+    total_minutes = 0.0
+    current_date = now_local.date()
+
+    if current_date.weekday() < 5:
+        total_minutes += get_trading_minutes_left_today(now_local)
+
+    current_date += datetime.timedelta(days=1)
+    while current_date <= exp_date:
+        if current_date.weekday() < 5:
+            total_minutes += 6.75 * 60.0
+        current_date += datetime.timedelta(days=1)
+
+    total_minutes = max(total_minutes, 1.0)
+    return total_minutes / (252 * 6.75 * 60.0)
+
+
 def calculate_bs_price(S, K, T, r, sigma, option_type="P"):
     """Calculate theoretical contract price using local Black-Scholes model."""
     if T <= 0 or sigma <= 0:
@@ -104,11 +145,8 @@ class OptionFinder:
         target_idx = min(dte_target, len(valid_expirations) - 1)
         selected_expiry = valid_expirations[target_idx]
 
-        trading_days_left = target_idx
-        T = max(trading_days_left, 1) / 252.0
-        print(
-            f"Locked expiration: {selected_expiry} ({trading_days_left} trading days from now, T={T:.4f})"
-        )
+        T = calculate_trading_time_t(selected_expiry)
+        print(f"Locked expiration: {selected_expiry} (T={T:.4f} trading years)")
 
         # Signed target delta: negative for puts, positive for calls
         target_signed_delta = (
