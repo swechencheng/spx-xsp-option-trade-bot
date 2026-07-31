@@ -33,7 +33,7 @@ class OptionFinder:
         self,
         ticker_symbol: str,
         xsp_spot: float,
-        iv: float,
+        iv_provider,
         risk_free_rate: float,
         option_type: str,
         target_delta_abs: float,
@@ -44,14 +44,14 @@ class OptionFinder:
         Args:
             ticker_symbol:    Underlying ticker (e.g., "XSP")
             xsp_spot:         Current spot price of XSP
-            iv:               Implied volatility (decimal, e.g., 0.16 for 16%)
+            iv_provider:      IVProvider instance to fetch sigma
             risk_free_rate:   Annualized risk-free rate (decimal)
             option_type:      "P" for Put, "C" for Call
             target_delta_abs: Absolute value of target delta (e.g., 0.20)
             dte_target:       Target days-to-expiration
 
         Returns:
-            dict: { "strike", "expiry", "market_price", "bid", "ask", "theo_price", "theo_delta", "option_type" }
+            dict: { "strike", "expiry", "market_price", "bid", "ask", "theo_price", "theo_delta", "theo_iv", "option_type" }
         """
         print(
             f"\n--- Finding optimal {ticker_symbol} market option"
@@ -78,8 +78,26 @@ class OptionFinder:
         selected_expiry = valid_expirations[target_idx]
 
         T = calculate_trading_time_t(selected_expiry)
+
+        # Fetch generic ATM IV for the selected expiry
+        atm_strike = round(xsp_spot)
+        atm_contract = Option(
+            ticker_symbol,
+            selected_expiry,
+            strike=atm_strike,
+            right=option_type,
+            exchange="SMART",
+        )
+        self.ib.qualifyContracts(atm_contract)
+
+        iv_data = self.ib.run(
+            iv_provider.get_iv(self.ib, atm_contract, ticker_symbol, selected_expiry)
+        )
+        iv = iv_data.get("model_iv") or iv_data.get("bid_iv") or iv_data.get("ask_iv")
+        if not iv:
+            raise Exception("Failed to fetch IV from IVProvider")
         print(
-            f"Locked expiration: {selected_expiry} ({trading_days_left} trading days from now, T={T:.4f})"
+            f"Locked expiration: {selected_expiry} (T={T:.4f} trading years) | IV: {iv:.4f}"
         )
 
         target_signed_delta = (
@@ -166,11 +184,12 @@ class OptionFinder:
         return {
             "strike": best_strike,
             "expiry": selected_expiry,
-            "theo_price": theo_price,
             "market_price": market_price,
             "bid": bid,
             "ask": ask,
+            "theo_price": theo_price,
             "theo_delta": best_theo_delta,
+            "theo_iv": iv,
             "option_type": option_type,
         }
 

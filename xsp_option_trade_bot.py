@@ -17,6 +17,7 @@ from xsp_option_finder_theory import (
 from xsp_option_finder_ibkr import OptionFinder as IbkrOptionFinder
 from xsp_option_trader import BullPutSpreadTrader, BearCallSpreadTrader
 from telegram_notifier import TelegramNotifier
+from iv_provider import IVProvider
 
 
 def count_consecutive_true(series: pd.Series) -> int:
@@ -260,21 +261,8 @@ def _run_strategy(args, now_est: datetime, notifier: TelegramNotifier):
 
     print(f"\n=== Executing {strategy_to_execute.upper()} strategy ===")
 
-    # Get live VIX
-    vix_data = fetcher.fetch_tradingview_live(tv_ticker="TVC:VIX")
-    if vix_data is None:
-        reason = "Failed to fetch live VIX data"
-        print(f"[-] {reason}. Exiting.")
-        msg = (
-            _build_header(now_est)
-            + _build_market_section(today_close, today_ema20, regime)
-            + f"\n❌ <b>Error</b>\n{reason}"
-        )
-        notifier.send_message(msg)
-        sys.exit(1)
-
     xsp_spot = today_close / 10.0
-    iv = vix_data["Close"] / 100.0
+    iv_provider = IVProvider()
 
     print("\n--- Connecting to IBKR ---")
     ib = IB()
@@ -309,7 +297,7 @@ def _run_strategy(args, now_est: datetime, notifier: TelegramNotifier):
         sell_leg_info = finder.find_option(
             ticker_symbol="XSP",
             xsp_spot=xsp_spot,
-            iv=iv,
+            iv_provider=iv_provider,
             risk_free_rate=risk_free_rate,
             option_type=option_type,
             target_delta_abs=target_delta,
@@ -327,11 +315,12 @@ def _run_strategy(args, now_est: datetime, notifier: TelegramNotifier):
 
         # Calculate real theoretical price and delta for the buy leg
         T = calculate_trading_time_t(sell_leg_info["expiry"])
+        chain_iv = sell_leg_info["theo_iv"]
         buy_theo_price = calculate_bs_price(
-            xsp_spot, buy_strike, T, risk_free_rate, iv, option_type
+            xsp_spot, buy_strike, T, risk_free_rate, chain_iv, option_type
         )
         buy_theo_delta = calculate_bs_delta(
-            xsp_spot, buy_strike, T, risk_free_rate, iv, option_type
+            xsp_spot, buy_strike, T, risk_free_rate, chain_iv, option_type
         )
 
         buy_leg_info = {
