@@ -1,29 +1,30 @@
 from base_option_trade_bot import BaseOptionTradeBot
 
 
-class XspOptionTradeBot(BaseOptionTradeBot):
+class SpxOptionTradeBot(BaseOptionTradeBot):
     @property
     def ticker_symbol(self) -> str:
-        return "XSP"
+        return "SPX"
 
     @property
     def trading_class(self) -> str:
-        return "XSP"
+        return "SPXW"
 
     @property
     def spot_multiplier(self) -> float:
-        # XSP is roughly 1/10th of SPX
-        return 0.1
+        # SPX spot is 1x
+        return 1.0
 
     @property
     def default_walk_step(self) -> float:
-        return 0.01
+        return 0.05
 
     @property
     def strike_offset(self) -> int:
-        return 1
+        # SPX spreads are usually 5-wide (equivalent risk to XSP 1-wide)
+        return 5
 
 
 if __name__ == "__main__":
-    bot = XspOptionTradeBot()
+    bot = SpxOptionTradeBot()
     bot.run()

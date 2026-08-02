@@ -35,6 +35,7 @@ class BaseCreditSpreadTrader:
         ticker_symbol: str,
         sell_leg_info: dict,
         buy_leg_info: dict,
+        trading_class: str = "",
     ):
         """Build and execute a Credit Spread combo order with walk-the-book repricing.
 
@@ -58,6 +59,7 @@ class BaseCreditSpreadTrader:
             sell_leg_info["strike"],
             sell_leg_info["option_type"],
             "CBOE",
+            tradingClass=trading_class,
             currency="USD",
         )
         buy_leg = Option(
@@ -66,6 +68,7 @@ class BaseCreditSpreadTrader:
             buy_leg_info["strike"],
             buy_leg_info["option_type"],
             "CBOE",
+            tradingClass=trading_class,
             currency="USD",
         )
         self.ib.qualifyContracts(sell_leg, buy_leg)
@@ -81,10 +84,15 @@ class BaseCreditSpreadTrader:
 
         # --- Calculate initial Credit ---
         # Spread Credit = Sell Leg Theo Price - Buy Leg Theo Price
-        initial_credit = round(
-            sell_leg_info["theo_price"] - buy_leg_info["theo_price"], 2
+        raw_initial_credit = sell_leg_info["theo_price"] - buy_leg_info["theo_price"]
+        # Round initial credit to the nearest walk_step increment
+        steps = round(raw_initial_credit / self.walk_step)
+        initial_credit = max(self.min_credit, steps * self.walk_step)
+        initial_credit = round(initial_credit, 2)
+
+        print(
+            f"\n  Theoretical Credit: {initial_credit:.2f} (Raw: {raw_initial_credit:.2f})"
         )
-        print(f"\n  Theoretical Credit: {initial_credit:.2f}")
 
         if initial_credit < self.min_credit:
             print(
@@ -99,6 +107,7 @@ class BaseCreditSpreadTrader:
             secType="BAG",
             exchange="CBOE",
             currency="USD",
+            tradingClass=trading_class,
             comboLegs=[
                 ComboLeg(conId=sell_leg.conId, ratio=1, action="SELL", exchange="CBOE"),
                 ComboLeg(conId=buy_leg.conId, ratio=1, action="BUY", exchange="CBOE"),
@@ -173,12 +182,14 @@ class BullPutSpreadTrader(BaseCreditSpreadTrader):
         ticker_symbol: str,
         sell_put_info: dict,
         buy_put_info: dict,
+        trading_class: str = "",
     ):
         return self.execute_spread(
             strategy_name="Bull Put Spread",
             ticker_symbol=ticker_symbol,
             sell_leg_info=sell_put_info,
             buy_leg_info=buy_put_info,
+            trading_class=trading_class,
         )
 
 
@@ -190,10 +201,12 @@ class BearCallSpreadTrader(BaseCreditSpreadTrader):
         ticker_symbol: str,
         sell_call_info: dict,
         buy_call_info: dict,
+        trading_class: str = "",
     ):
         return self.execute_spread(
             strategy_name="Bear Call Spread",
             ticker_symbol=ticker_symbol,
             sell_leg_info=sell_call_info,
             buy_leg_info=buy_call_info,
+            trading_class=trading_class,
         )
