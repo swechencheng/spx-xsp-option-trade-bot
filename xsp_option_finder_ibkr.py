@@ -32,7 +32,8 @@ class OptionFinder:
     def find_option(
         self,
         ticker_symbol: str,
-        xsp_spot: float,
+        trading_class: str,
+        underlying_spot: float,
         iv_provider,
         risk_free_rate: float,
         option_type: str,
@@ -42,8 +43,9 @@ class OptionFinder:
         """Find the option strike closest to target_delta_abs for the nearest DTE.
 
         Args:
-            ticker_symbol:    Underlying ticker (e.g., "XSP")
-            xsp_spot:         Current spot price of XSP
+            ticker_symbol:    Underlying ticker (e.g., "XSP" or "SPX")
+            trading_class:    The specific trading class (e.g. "SPXW")
+            underlying_spot:  Current spot price of underlying
             iv_provider:      IVProvider instance to fetch sigma
             risk_free_rate:   Annualized risk-free rate (decimal)
             option_type:      "P" for Put, "C" for Call
@@ -63,7 +65,12 @@ class OptionFinder:
         chains = self.ib.reqSecDefOptParams(
             contract.symbol, "", contract.secType, contract.conId
         )
-        cboe_chain = next(c for c in chains if c.exchange == "CBOE")
+        cboe_chain = next(
+            c
+            for c in chains
+            if c.exchange == "CBOE"
+            and (not trading_class or c.tradingClass == trading_class)
+        )
 
         today = datetime.date.today()
         valid_expirations = sorted(
@@ -80,13 +87,14 @@ class OptionFinder:
         T = calculate_trading_time_t(selected_expiry)
 
         # Fetch generic ATM IV for the selected expiry
-        atm_strike = round(xsp_spot)
+        atm_strike = round(underlying_spot)
         atm_contract = Option(
             ticker_symbol,
             selected_expiry,
             strike=atm_strike,
             right=option_type,
             exchange="SMART",
+            tradingClass=trading_class,
         )
         self.ib.qualifyContracts(atm_contract)
 
@@ -109,13 +117,13 @@ class OptionFinder:
         best_theo_delta = 0.0
 
         for strike in sorted(cboe_chain.strikes):
-            if abs(strike - xsp_spot) > (xsp_spot * 0.15):
+            if abs(strike - underlying_spot) > (underlying_spot * 0.15):
                 continue
             if strike % 1 != 0:
                 continue
 
             calc_delta = calculate_bs_delta(
-                xsp_spot, strike, T, risk_free_rate, iv, option_type
+                underlying_spot, strike, T, risk_free_rate, iv, option_type
             )
             error = abs(calc_delta - target_signed_delta)
 
@@ -130,7 +138,7 @@ class OptionFinder:
         )
 
         theo_price = calculate_bs_price(
-            xsp_spot, best_strike, T, risk_free_rate, iv, option_type
+            underlying_spot, best_strike, T, risk_free_rate, iv, option_type
         )
 
         # Build the Option contract to fetch market data
@@ -141,6 +149,7 @@ class OptionFinder:
             right=option_type,
             exchange="CBOE",
             currency="USD",
+            tradingClass=trading_class,
         )
         self.ib.qualifyContracts(opt_contract)
 
@@ -196,6 +205,7 @@ class OptionFinder:
     def fetch_market_price(
         self,
         ticker_symbol: str,
+        trading_class: str,
         expiry: str,
         strike: float,
         option_type: str,
@@ -220,6 +230,7 @@ class OptionFinder:
             right=option_type,
             exchange="CBOE",
             currency="USD",
+            tradingClass=trading_class,
         )
         self.ib.qualifyContracts(opt_contract)
 
