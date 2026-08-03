@@ -219,6 +219,20 @@ The cron job will silently wake up every minute and trigger the script. The bash
 
 ---
 
+## Known Limitations
+
+### Theoretical Volatility Skew Underestimation
+By default, the bot uses a theoretical pricing model (`TheoryOptionFinder`) to compute option prices and deltas without heavily relying on IBKR's market data subscriptions. 
+
+To accomplish this efficiently, it probes the At-The-Money (ATM) contract to fetch a single Implied Volatility (IV) and applies it universally across the entire option chain using the Black-Scholes formula. However, equity indices like SPX and XSP exhibit a pronounced **Volatility Skew** (puts have significantly higher IV the further out-of-the-money they are due to downside crash protection demand).
+
+Because the bot applies the artificially low ATM IV to deep out-of-the-money options, it severely underestimates their theoretical price and delta. As a result, when you ask the theoretical finder for a `-0.1` delta put, it will be forced to select a strike much closer to the current spot price than a real market options chain would suggest.
+
+**Solution:**
+If you require precision that matches live trading platforms (like IBKR Mobile) and have active market data subscriptions, you should start the bot with the `--ib-market` flag. This forces the bot to fetch the true, live model Greeks for every individual strike, completely accounting for the real market's volatility skew.
+
+---
+
 ## License
 
 This project is licensed under the **Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)** License.
