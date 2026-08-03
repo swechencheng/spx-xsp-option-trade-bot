@@ -87,7 +87,10 @@ class OptionFinder:
         T = calculate_trading_time_t(selected_expiry)
 
         # Fetch generic ATM IV for the selected expiry
-        atm_strike = round(underlying_spot)
+        if ticker_symbol == "SPX":
+            atm_strike = round(underlying_spot / 5) * 5
+        else:
+            atm_strike = round(underlying_spot)
         atm_contract = Option(
             ticker_symbol,
             selected_expiry,

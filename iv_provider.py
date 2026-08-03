@@ -141,8 +141,16 @@ class IVProvider:
         """
         iv_data = {"model_iv": None, "bid_iv": None, "ask_iv": None}
 
+        if len(exp_date) == 8 and "-" not in exp_date:
+            exp_date = f"{exp_date[:4]}-{exp_date[4:6]}-{exp_date[6:]}"
+
+        # yfinance uses ^SPX and ^XSP for indices
+        yf_symbol = symbol
+        if yf_symbol in ("SPX", "XSP", "NDX", "VIX"):
+            yf_symbol = f"^{yf_symbol}"
+
         try:
-            tk = yf.Ticker(symbol)
+            tk = yf.Ticker(yf_symbol)
             chain = tk.option_chain(exp_date)
 
             if right.upper() == "C":
