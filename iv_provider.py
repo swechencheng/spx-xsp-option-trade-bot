@@ -50,9 +50,15 @@ class IVProvider:
 
         iv_data = await self._get_iv_from_ibkr(ib_client, contract, timeout_sec)
 
-        # If IBKR strategy encountered a subscription error, we fall back to yfinance
-        # for this call, and future calls will use yfinance automatically.
-        if self._use_yfinance:
+        is_empty = (
+            iv_data.get("model_iv") is None
+            and iv_data.get("bid_iv") is None
+            and iv_data.get("ask_iv") is None
+        )
+
+        # If IBKR strategy encountered a subscription error (global flag),
+        # or we just didn't get any IV data for this specific contract, fall back to yfinance.
+        if self._use_yfinance or is_empty:
             logger.info(f"[IVProvider] Retrying {symbol} IV using yfinance fallback...")
             return self._get_iv_from_yfinance(
                 symbol=symbol,
