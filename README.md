@@ -1,9 +1,9 @@
-# XSP Automated Options Trading Bot
+# SPX & XSP Automated Options Trading Bot
 
 > [!CAUTION]
 > **Disclaimer & Caveat**: This software is strictly for **educational and personal study purposes only**. It is **NOT** intended for commercial use, and it does **NOT** constitute financial advice. Options trading involves significant risk of loss. The author assumes no liability for any financial losses incurred. Use entirely at your own risk.
 
-An end-to-end automated trading bot for Interactive Brokers (IBKR) that trades next-day (1DTE) Credit Spreads on the XSP (Mini-SPX) index.
+An end-to-end automated trading bot for Interactive Brokers (IBKR) that trades next-day (1DTE) Credit Spreads on the SPX indices and XSP (Mini-SPX).
 
 This bot analyzes live market data, calculates theoretical option prices using the Black-Scholes model, automatically identifies the optimal sell strike based on target delta, and constructs a 1-wide credit spread by placing the buy leg one strike away from the sell leg. It then executes the trade using a "Walk-the-Book" algorithm to ensure the best possible fill price.
 
@@ -44,7 +44,7 @@ When a valid trend is detected, the bot performs the following steps:
 1. **Live Data Fetching**: Pulls high-precision live SPX and VIX snapshots from TradingView and combines them with historical data from Yahoo Finance.
 2. **Option Discovery (Black-Scholes)**: Instead of requesting delayed option chains from IBKR, the bot uses the live VIX and SPX prices to calculate theoretical option prices using the Black-Scholes equation. It scans the theoretical chain to find:
    - A "Sell" leg with an absolute Delta of **0.20**
-   - A "Buy" leg placed **one strike ($1) away** from the sell leg, creating a 1-wide spread
+   - A "Buy" leg placed one strike away from the sell leg (e.g., $5 wide for SPX, $1 wide for XSP), creating a tight credit spread
    - **Holiday-Aware Expiration Selection**: Instead of blindly adding calendar days, the bot downloads the list of live expirations directly from CBOE and sorts them. This allows it to perfectly calculate the next _trading day_ for 1DTE expirations, automatically skipping weekends and exchange holidays.
 3. **Execution (Walk the Book)**:
    - The bot connects to the IBKR TWS/Gateway API.
@@ -61,7 +61,7 @@ This strategy relies on the core mathematical advantages of option selling:
 1. **High Probability of Success**: By selling options at the 0.20 Delta, there is an approximate **80% statistical probability** that the sold option will expire Out-Of-The-Money (OOTM) and be completely worthless.
 2. **Rapid Theta Decay**: Trading options close to expiration (1DTE) means that the time value of the option decays exponentially fast.
 3. **Trend Following**: By filtering trades using the EMA20, the bot ensures you are always trading _with_ the broader market momentum. You are placing bets that the market will not sharply reverse against the current short-term trend.
-4. **Defined Risk**: Buying the option one strike away from the sell leg creates a tight 1-wide "Credit Spread." This caps your maximum potential loss to just $1 per spread (minus the credit received), making the strategy highly capital efficient.
+4. **Defined Risk**: Buying the option one strike away from the sell leg creates a tight "Credit Spread". This caps your maximum potential loss to the spread width (e.g., $5 for SPX, $1 for XSP minus the credit received), making the strategy highly capital efficient.
 
 ---
 
@@ -108,9 +108,11 @@ For this reason, the bot **defaults to Bull Put Spreads only**. Bear Call Spread
 ## Architecture & Modules
 
 - `market_data_fetcher.py`: Handles data ingestion. Scrapes real-time snapshot data from TradingView and merges it with historical YFinance data to create a perfect 100-day OHLC dataset.
-- `xsp_option_finder_theory.py`: The quantitative engine. Implements the Black-Scholes math (Norm distributions, d1/d2) to find the exact sell-leg strike price that matches the target 0.20 Delta without relying on live IBKR market data subscriptions. The buy leg is then placed one strike away.
-- `xsp_option_trader.py`: The execution engine. Contains the `BaseCreditSpreadTrader` class, handling the IBKR asynchronous API, order creation, and the automated limit-price repricing loop.
-- `xsp_option_trade_bot.py`: The brain. Orchestrates the modules above, calculates the EMA20, evaluates the bullish/bearish rules, and makes the final decision to trade or abort.
+- `spx_option_finder_ibkr.py` & `xsp_option_finder_theory.py`: The quantitative engines. They find the exact sell-leg strike price that matches the target Delta using either the Black-Scholes math (theory) or IBKR's live model Greeks (market).
+- `credit_spread_trader.py`: The execution engine. Contains the `BaseCreditSpreadTrader` class, handling the IBKR asynchronous API, order creation, and the automated limit-price repricing loop (Walk the Book).
+- `base_option_trade_bot.py`: The core brain. Calculates the EMA20, evaluates the bullish/bearish rules, and makes the final decision to trade or abort.
+- `spx_option_trade_bot.py` & `xsp_option_trade_bot.py`: The entry points that subclass the base bot and set index-specific constants (like default walk steps, contract multipliers, and symbol names).
+- `iv_provider.py`: Handles fetching implied volatility from either IBKR directly or defaulting to Yahoo Finance chains for theoretical calculations.
 - `telegram_notifier.py`: Sends a Telegram message after every bot execution — regardless of outcome (trade filled, aborted, error). Reads credentials from `.tg_bot_secret.json`.
 - `bot_launcher.sh`: The automation wrapper that ensures the script executes exactly at 3:55 PM EST, regardless of the physical timezone of your computer.
 
@@ -170,13 +172,16 @@ If the secret file is missing or malformed, the bot will log a warning and conti
 You can manually run the bot at any time to evaluate the current market and execute a trade if conditions are met:
 
 ```bash
+# For SPX:
+venv/bin/python spx_option_trade_bot.py
+# For XSP:
 venv/bin/python xsp_option_trade_bot.py
 ```
 
-You can customize the bot's behavior using command-line arguments. For example, to run on the live trading port with a custom quantity and credit threshold:
+You can customize the bot's behavior using command-line arguments. For example, to run on the live trading port with a custom quantity, pulling actual market data:
 
 ```bash
-venv/bin/python xsp_option_trade_bot.py --ib-port 7496 --quantity 2 --min-credit 0.10
+venv/bin/python spx_option_trade_bot.py --ib-port 7496 --quantity 2 --ib-market
 ```
 
 Available arguments (all default to the original strategy constants):
@@ -193,6 +198,7 @@ Available arguments (all default to the original strategy constants):
 - `--min-credit`: Minimum acceptable net credit (default: 0.09)
 - `--quantity`: Number of spread contracts to trade (default: 1)
 - `--add-bear`: Enable Bear Call Credit Spreads (disabled by default)
+- `--ib-market`: Use IBKR live option chain model Greeks instead of Black-Scholes theory.
 
 ### Fully Automated Setup (macOS & Linux)
 
@@ -222,7 +228,8 @@ The cron job will silently wake up every minute and trigger the script. The bash
 ## Known Limitations
 
 ### Theoretical Volatility Skew Underestimation
-By default, the bot uses a theoretical pricing model (`TheoryOptionFinder`) to compute option prices and deltas without heavily relying on IBKR's market data subscriptions. 
+
+By default, the bot uses a theoretical pricing model (`TheoryOptionFinder`) to compute option prices and deltas without heavily relying on IBKR's market data subscriptions.
 
 To accomplish this efficiently, it probes the At-The-Money (ATM) contract to fetch a single Implied Volatility (IV) and applies it universally across the entire option chain using the Black-Scholes formula. However, equity indices like SPX and XSP exhibit a pronounced **Volatility Skew** (puts have significantly higher IV the further out-of-the-money they are due to downside crash protection demand).
 
