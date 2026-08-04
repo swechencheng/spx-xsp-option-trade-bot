@@ -76,35 +76,6 @@ While highly probable, this strategy is not without risks. You must be aware of 
 
 ---
 
-## Backtest Results (2020–2025)
-
-We backtested the core assumption of this strategy against **1,507 trading days** of SPX daily data from January 2020 to December 2025. The test checks whether, given the EMA20 regime on day _i_, the index stays within a **50-point buffer** on day _i+1_ — simulating whether a 0.20 Delta credit spread (approximately 50 SPX points OTM) would have expired safely.
-
-### Bullish Regime (Close > EMA20)
-
-| Period    | Total Signals | ✅ Pass | ❌ Fail | Win Rate  |
-| --------- | :-----------: | :-----: | :-----: | :-------: |
-| 2020–2025 |     1,044     |   956   |   88    | **91.6%** |
-| 2025 only |      180      |   165   |   15    | **91.7%** |
-
-### Bearish Regime (Close < EMA20)
-
-We tested three variants of the bearish entry filter:
-
-| Variant                                  | Signals | ✅ Pass | ❌ Fail | Win Rate |
-| ---------------------------------------- | :-----: | :-----: | :-----: | :------: |
-| Simple (Close < EMA20 only)              |   462   |   346   |   116   |  74.9%   |
-| Bear bar (+ Close < Open)                |   289   |   218   |   71    |  75.4%   |
-| Strict (+ bear bar + 1-day confirmation) |   209   |   151   |   58    |  72.2%   |
-
-### Conclusion
-
-The bullish side delivers a consistent **~92% win rate** across all time scales, making it a reliable default strategy. The bearish side, regardless of filtering, tops out at **~75%** — significantly lower and more exposed to sharp bounce-back rallies (e.g., April 2025 tariff reversal: +424 points overnight). Adding stricter filters reduces signal count without meaningfully improving the win rate.
-
-For this reason, the bot **defaults to Bull Put Spreads only**. Bear Call Spreads can be enabled with the `--add-bear` flag for users who accept the lower win probability.
-
----
-
 ## Architecture & Modules
 
 - `market_data_fetcher.py`: Handles data ingestion. Scrapes real-time snapshot data from TradingView and merges it with historical YFinance data to create a perfect 100-day OHLC dataset.
