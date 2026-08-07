@@ -62,9 +62,9 @@ class MarketDataFetcher:
             print(f"Error fetching live data for {tv_ticker}: {e}")
             return None
 
-    def fetch_perfect_100_days(self, yf_ticker, tv_ticker):
+    def fetch_perfect_100_days(self, yf_ticker, tv_ticker, ibkr_spot=None):
         """
-        Combines 99 days of YF history with today's TradingView live snapshot.
+        Combines 99 days of YF history with today's live snapshot (from IBKR or TradingView).
         """
         print(f"--- Processing {yf_ticker} / {tv_ticker} ---")
 
@@ -89,9 +89,20 @@ class MarketDataFetcher:
         # Keep only the last 99 completed trading days and the required columns
         past_99_days = history_df.iloc[-99:][["Open", "High", "Low", "Close"]]
 
-        # 2. Fetch the real-time snapshot for today from TradingView
-        print(f"[*] Fetching live snapshot for {tv_ticker} from TradingView...")
-        live_snapshot = self.fetch_tradingview_live(tv_ticker)
+        # 2. Fetch the real-time snapshot for today
+        if ibkr_spot is not None and not pd.isna(ibkr_spot):
+            print(f"[*] Using live IBKR spot price: {ibkr_spot}")
+            live_snapshot = {
+                "Open": ibkr_spot,
+                "High": ibkr_spot,
+                "Low": ibkr_spot,
+                "Close": ibkr_spot,
+            }
+        elif tv_ticker:
+            print(f"[*] Fetching live snapshot for {tv_ticker} from TradingView...")
+            live_snapshot = self.fetch_tradingview_live(tv_ticker)
+        else:
+            live_snapshot = None
 
         if live_snapshot:
             # 3. Combine history with the live snapshot

@@ -41,8 +41,8 @@ The bot is strictly defensive. It will **abort** the trade under the following c
 
 When a valid trend is detected, the bot performs the following steps:
 
-1. **Live Data Fetching**: Pulls high-precision live SPX and VIX snapshots from TradingView and combines them with historical data from Yahoo Finance.
-2. **Option Discovery (Black-Scholes)**: Instead of requesting delayed option chains from IBKR, the bot uses the live VIX and SPX prices to calculate theoretical option prices using the Black-Scholes equation. It scans the theoretical chain to find:
+1. **Live Data Fetching**: By default, it pulls high-precision live SPX and VIX snapshots from TradingView and combines them with historical data from Yahoo Finance. (If the `--ib-market` flag is used, it completely bypasses TradingView and fetches the live SPX spot directly through your IBKR data feed).
+2. **Option Discovery**: By default, the bot calculates theoretical option prices using the Black-Scholes equation. If `--ib-market` is specified, it scans real-time live model Greeks directly from IBKR (`reqTickers`) without incurring regulatory snapshot fees, remaining fully compatible with paper trading accounts. It scans to find:
    - A "Sell" leg with an absolute Delta of **0.20**
    - A "Buy" leg placed one strike away from the sell leg (e.g., $5 wide for SPX, $1 wide for XSP), creating a tight credit spread
    - **Holiday-Aware Expiration Selection**: Instead of blindly adding calendar days, the bot downloads the list of live expirations directly from CBOE and sorts them. This allows it to perfectly calculate the next _trading day_ for 1DTE expirations, automatically skipping weekends and exchange holidays.
@@ -50,7 +50,7 @@ When a valid trend is detected, the bot performs the following steps:
    - The bot connects to the IBKR TWS/Gateway API.
    - It constructs a `BAG` combo order (a multi-leg spread).
    - It submits an initial Limit Order at the theoretical mid-price (maximizing credit).
-   - If the order isn't filled within 5 seconds, it automatically cancels, reduces the credit required by $0.01, and resubmits. This "Walk the Book" process repeats until the order fills or the credit drops below the minimum acceptable threshold ($0.09).
+   - If the order isn't filled within 5 seconds, it cleanly cancels the order and resubmits a new one with the credit reduced by $0.01 (avoiding IBKR combo modification Warning 105). This "Walk the Book" process repeats until the order fills or the credit drops below the minimum acceptable threshold ($0.09).
 
 ---
 
@@ -78,7 +78,7 @@ While highly probable, this strategy is not without risks. You must be aware of 
 
 ## Architecture & Modules
 
-- `market_data_fetcher.py`: Handles data ingestion. Scrapes real-time snapshot data from TradingView and merges it with historical YFinance data to create a perfect 100-day OHLC dataset.
+- `market_data_fetcher.py`: Handles data ingestion. Scrapes real-time snapshot data from TradingView (or directly from IBKR if `--ib-market` is used) and merges it with historical YFinance data to create a perfect 100-day OHLC dataset.
 - `spx_option_finder_ibkr.py` & `xsp_option_finder_theory.py`: The quantitative engines. They find the exact sell-leg strike price that matches the target Delta using either the Black-Scholes math (theory) or IBKR's live model Greeks (market).
 - `credit_spread_trader.py`: The execution engine. Contains the `BaseCreditSpreadTrader` class, handling the IBKR asynchronous API, order creation, and the automated limit-price repricing loop (Walk the Book).
 - `base_option_trade_bot.py`: The core brain. Calculates the EMA20, evaluates the bullish/bearish rules, and makes the final decision to trade or abort.
@@ -109,6 +109,17 @@ pip install -r requirements.txt
 ```
 
 _Note: Ensure your TWS API settings have "Enable ActiveX and Socket Clients" checked._
+
+### 3. IBKR Market Data Subscriptions (For `--ib-market`)
+
+If you intend to run the bot with the `--ib-market` flag to utilize real-time model Greeks and the live SPX spot price, you **must** have active market data subscriptions to avoid "No security definition" or missing data errors.
+
+**You need BOTH of the following subscriptions:**
+
+1. **US Securities Snapshot and Futures Value Bundle (NP,L1)**: This is the mandatory foundational base package required by IBKR for streaming US market data.
+2. **Cboe One Add-On Bundle (NP,L1)**: This add-on provides the real-time index spot pricing specifically for CBOE indices (like SPX and VIX).
+
+_(Note: IBKR requires the "US Securities Snapshot" bundle as a prerequisite before it allows you to purchase the "Cboe One Add-On")._
 
 ---
 
@@ -207,7 +218,7 @@ To accomplish this efficiently, it probes the At-The-Money (ATM) contract to fet
 Because the bot applies the artificially low ATM IV to deep out-of-the-money options, it severely underestimates their theoretical price and delta. As a result, when you ask the theoretical finder for a `-0.1` delta put, it will be forced to select a strike much closer to the current spot price than a real market options chain would suggest.
 
 **Solution:**
-If you require precision that matches live trading platforms (like IBKR Mobile) and have active market data subscriptions, you should start the bot with the `--ib-market` flag. This forces the bot to fetch the true, live model Greeks for every individual strike, completely accounting for the real market's volatility skew.
+If you require precision that matches live trading platforms (like IBKR Mobile) and have active market data subscriptions, you should start the bot with the `--ib-market` flag. This forces the bot to fetch the true, live model Greeks for every individual strike using standard data streams (avoiding regulatory snapshot fees) and accurately accounts for the real market's volatility skew. It is fully compatible with both Live and Paper accounts.
 
 ---
 

@@ -164,12 +164,27 @@ class BaseCreditSpreadTrader:
                 self.ib.sleep(1)
                 return None
 
-            # Modify order price in-place (same orderId, IBKR treats as modification)
+            # IBKR sometimes rejects combo in-place modification with Warning 105
+            # "Order being modified does not match original order."
+            # We will cancel and replace to be perfectly robust.
+            self.ib.cancelOrder(order)
+            self.ib.sleep(0.5)
+
             limit_price = -current_credit
-            order.lmtPrice = limit_price
+
+            # Create a completely new order object
+            order = LimitOrder(
+                action="BUY",
+                totalQuantity=self.quantity,
+                lmtPrice=limit_price,
+                tif="DAY",
+            )
+            order.transmit = True
+            order.overridePercentageConstraints = True
+
             trade = self.ib.placeOrder(combo, order)
             print(
-                f"  🔄 Repricing order | New Credit: {current_credit:.2f}"
+                f"  🔄 Repricing order (Cancel/Replace) | New Credit: {current_credit:.2f}"
                 f" (limitPrice={limit_price:.2f})"
             )
 

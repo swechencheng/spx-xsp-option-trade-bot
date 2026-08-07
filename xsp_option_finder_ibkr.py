@@ -2,28 +2,17 @@ import math
 import datetime
 from ib_async import IB, Index, Option
 
-# Import theoretical functions to find the strike efficiently
-# instead of paying $0.01 per strike to request market snapshots for the entire chain.
-from xsp_option_finder_theory import (
-    calculate_bs_delta,
-    calculate_bs_price,
-    calculate_trading_time_t,
-)
+from xsp_option_finder_theory import calculate_trading_time_t
 
 
 class OptionFinder:
     """Finds the best-fit option contract for a given delta target using Market Data.
 
-    Uses IBKR's free reqSecDefOptParams to fetch the option chain structure.
-    Selects the strike based on theoretical delta. Once the optimal strike is found,
-    it requests a regulatory snapshot (NBBO) for that specific option contract to get
-    real-time market bid, ask, and mid prices.
-
-    Caveat: This OptionFinder cannot be used with Paper Account, you will get error:
-    "Error 10213, reqId x: API access is restricted on regulatory snapshot for XXX."
+    Uses IBKR's reqTickers to fetch real-time market Greeks and prices
+    without incurring the $0.01 regulatory snapshot fee.
 
     Returns:
-        dict with keys: strike, expiry, market_price, bid, ask, theo_price, theo_delta, option_type
+        dict with keys: strike, expiry, market_price, bid, ask, theo_price, theo_delta, theo_iv, option_type
     """
 
     def __init__(self, ib_client: IB):
@@ -46,7 +35,7 @@ class OptionFinder:
             ticker_symbol:    Underlying ticker (e.g., "XSP" or "SPX")
             trading_class:    The specific trading class (e.g. "SPXW")
             underlying_spot:  Current spot price of underlying
-            iv_provider:      IVProvider instance to fetch sigma
+            iv_provider:      (Unused, kept for signature compatibility)
             risk_free_rate:   Annualized risk-free rate (decimal)
             option_type:      "P" for Put, "C" for Call
             target_delta_abs: Absolute value of target delta (e.g., 0.20)
@@ -65,18 +54,26 @@ class OptionFinder:
         chains = self.ib.reqSecDefOptParams(
             contract.symbol, "", contract.secType, contract.conId
         )
-        cboe_chain = next(
-            c
-            for c in chains
-            if c.exchange == "CBOE"
-            and (not trading_class or c.tradingClass == trading_class)
-        )
+
+        target_chain = None
+        for c in chains:
+            if c.exchange in ["SMART", "CBOE"] and (
+                not trading_class or c.tradingClass == trading_class
+            ):
+                target_chain = c
+                if c.exchange == "SMART":
+                    break
+
+        if not target_chain:
+            raise Exception(
+                f"No option chain found for {ticker_symbol} with trading class {trading_class}."
+            )
 
         today = datetime.date.today()
         valid_expirations = sorted(
             [
                 exp
-                for exp in cboe_chain.expirations
+                for exp in target_chain.expirations
                 if datetime.datetime.strptime(exp, "%Y%m%d").date() >= today
             ]
         )
@@ -85,31 +82,57 @@ class OptionFinder:
         selected_expiry = valid_expirations[target_idx]
 
         T = calculate_trading_time_t(selected_expiry)
+        print(f"Locked expiration: {selected_expiry} (T={T:.4f} trading years)")
 
-        # Fetch generic ATM IV for the selected expiry
-        if ticker_symbol == "SPX":
-            atm_strike = round(underlying_spot / 5) * 5
+        if underlying_spot and not math.isnan(underlying_spot) and underlying_spot > 0:
+            filtered_strikes = [
+                s
+                for s in target_chain.strikes
+                if underlying_spot - 120 <= s <= underlying_spot + 120
+            ]
         else:
-            atm_strike = round(underlying_spot)
-        atm_contract = Option(
-            ticker_symbol,
-            selected_expiry,
-            strike=atm_strike,
-            right=option_type,
-            exchange="SMART",
-            tradingClass=trading_class,
-        )
-        self.ib.qualifyContracts(atm_contract)
+            mid_idx = len(target_chain.strikes) // 2
+            filtered_strikes = target_chain.strikes[
+                max(0, mid_idx - 50) : min(len(target_chain.strikes), mid_idx + 50)
+            ]
 
-        iv_data = self.ib.run(
-            iv_provider.get_iv(self.ib, atm_contract, ticker_symbol, selected_expiry)
-        )
-        iv = iv_data.get("model_iv") or iv_data.get("bid_iv") or iv_data.get("ask_iv")
-        if not iv:
-            raise Exception("Failed to fetch IV from IVProvider")
-        print(
-            f"Locked expiration: {selected_expiry} (T={T:.4f} trading years) | IV: {iv:.4f}"
-        )
+        contracts = []
+        for s in filtered_strikes:
+            contracts.append(
+                Option(
+                    ticker_symbol,
+                    selected_expiry,
+                    s,
+                    option_type,
+                    "SMART",
+                    tradingClass=trading_class,
+                )
+            )
+
+        self.ib.qualifyContracts(*contracts)
+        valid_contracts = [c for c in contracts if c.conId != 0]
+
+        self.ib.reqMarketDataType(
+            4
+        )  # Fallback to delayed-frozen if market is closed or not subscribed
+        tickers = self.ib.reqTickers(*valid_contracts)
+
+        print("Waiting for option Greeks to populate...")
+        timeout = 10.0
+        elapsed = 0.0
+        while elapsed < timeout:
+            populated = sum(
+                1
+                for t in tickers
+                if t.modelGreeks
+                and t.modelGreeks.delta is not None
+                and not math.isnan(t.modelGreeks.delta)
+            )
+            # Wait until at least 80% of contracts have populated greeks, or timeout
+            if populated >= len(tickers) * 0.8:
+                break
+            self.ib.sleep(0.1)
+            elapsed += 0.1
 
         target_signed_delta = (
             target_delta_abs if option_type.upper() == "C" else -target_delta_abs
@@ -117,64 +140,33 @@ class OptionFinder:
 
         best_strike = None
         min_delta_error = float("inf")
-        best_theo_delta = 0.0
+        best_ticker = None
 
-        for strike in sorted(cboe_chain.strikes):
-            if abs(strike - underlying_spot) > (underlying_spot * 0.15):
+        for t in tickers:
+            if not t.modelGreeks or t.modelGreeks.delta is None:
                 continue
-            if strike % 1 != 0:
+            delta = t.modelGreeks.delta
+            if math.isnan(delta):
                 continue
 
-            calc_delta = calculate_bs_delta(
-                underlying_spot, strike, T, risk_free_rate, iv, option_type
-            )
-            error = abs(calc_delta - target_signed_delta)
+            error = abs(delta - target_signed_delta)
 
             if error < min_delta_error:
                 min_delta_error = error
-                best_strike = strike
-                best_theo_delta = calc_delta
+                best_strike = t.contract.strike
+                best_ticker = t
+
+        if not best_ticker:
+            raise Exception("Failed to find any option with populated Greeks.")
 
         print(
             f"Best strike found: [{best_strike}]"
-            f" (Theo Delta: {best_theo_delta:.4f} vs Target: {target_signed_delta})"
+            f" (Market Delta: {best_ticker.modelGreeks.delta:.4f} vs Target: {target_signed_delta})"
         )
 
-        theo_price = calculate_bs_price(
-            underlying_spot, best_strike, T, risk_free_rate, iv, option_type
-        )
+        bid = best_ticker.bid if not math.isnan(best_ticker.bid) else 0.0
+        ask = best_ticker.ask if not math.isnan(best_ticker.ask) else 0.0
 
-        # Build the Option contract to fetch market data
-        opt_contract = Option(
-            symbol=ticker_symbol,
-            lastTradeDateOrContractMonth=selected_expiry,
-            strike=best_strike,
-            right=option_type,
-            exchange="CBOE",
-            currency="USD",
-            tradingClass=trading_class,
-        )
-        self.ib.qualifyContracts(opt_contract)
-
-        print(f"  Requesting regulatory snapshot for {opt_contract.localSymbol}...")
-
-        # Request regulatory snapshot (costs $0.01 per request, provides NBBO)
-        ticker = self.ib.reqMktData(
-            opt_contract, genericTickList="", snapshot=False, regulatorySnapshot=True
-        )
-
-        # Wait until bid/ask data is available (can take a few seconds)
-        timeout = 10.0
-        elapsed = 0.0
-        while (math.isnan(ticker.bid) or math.isnan(ticker.ask)) and elapsed < timeout:
-            self.ib.sleep(0.1)
-            elapsed += 0.1
-
-        # Fallbacks for missing data
-        bid = ticker.bid if not math.isnan(ticker.bid) else 0.0
-        ask = ticker.ask if not math.isnan(ticker.ask) else 0.0
-
-        # Calculate mid-price or fallback
         if bid > 0 and ask > 0:
             market_price = (bid + ask) / 2.0
         elif bid > 0:
@@ -183,16 +175,29 @@ class OptionFinder:
             market_price = ask
         else:
             market_price = (
-                ticker.markPrice if not math.isnan(ticker.markPrice) else theo_price
+                best_ticker.markPrice
+                if not math.isnan(best_ticker.markPrice)
+                else best_ticker.modelGreeks.optPrice
             )
+
+        theo_price = (
+            best_ticker.modelGreeks.optPrice
+            if best_ticker.modelGreeks
+            and not math.isnan(best_ticker.modelGreeks.optPrice)
+            else market_price
+        )
+        theo_iv = (
+            best_ticker.modelGreeks.impliedVol
+            if best_ticker.modelGreeks
+            and not math.isnan(best_ticker.modelGreeks.impliedVol)
+            else 0.15
+        )
 
         print(f"  Model Theoretical Price: {theo_price:.2f}")
         print(
             f"  Snapshot Market Price: {market_price:.2f} (Bid: {bid:.2f}, Ask: {ask:.2f})"
         )
 
-        # TODO fix the compatibility issue to switch between theo_price and market_price.
-        # So that downstream code like BaseCreditSpreadTrader works out-of-the-box using the market price.
         return {
             "strike": best_strike,
             "expiry": selected_expiry,
@@ -200,8 +205,8 @@ class OptionFinder:
             "bid": bid,
             "ask": ask,
             "theo_price": theo_price,
-            "theo_delta": best_theo_delta,
-            "theo_iv": iv,
+            "theo_delta": best_ticker.modelGreeks.delta,
+            "theo_iv": theo_iv,
             "option_type": option_type,
         }
 
@@ -214,10 +219,11 @@ class OptionFinder:
         option_type: str,
         theo_price_fallback: float = 0.0,
     ) -> dict:
-        """Fetch NBBO market price for a specific option contract via regulatory snapshot.
+        """Fetch NBBO market price for a specific option contract using standard market data.
 
         Args:
             ticker_symbol:       Underlying ticker (e.g., "XSP")
+            trading_class:       Trading class (e.g., "SPXW")
             expiry:              Expiration date string (YYYYMMDD)
             strike:              Option strike price
             option_type:         "P" for Put, "C" for Call
@@ -231,19 +237,19 @@ class OptionFinder:
             lastTradeDateOrContractMonth=expiry,
             strike=strike,
             right=option_type,
-            exchange="CBOE",
+            exchange="SMART",
             currency="USD",
             tradingClass=trading_class,
         )
         self.ib.qualifyContracts(opt_contract)
 
-        print(f"  Requesting regulatory snapshot for {opt_contract.localSymbol}...")
+        print(f"  Requesting market data for {opt_contract.localSymbol}...")
 
-        ticker = self.ib.reqMktData(
-            opt_contract, genericTickList="", snapshot=False, regulatorySnapshot=True
-        )
+        self.ib.reqMarketDataType(4)
+        tickers = self.ib.reqTickers(opt_contract)
+        ticker = tickers[0]
 
-        timeout = 10.0
+        timeout = 5.0
         elapsed = 0.0
         while (math.isnan(ticker.bid) or math.isnan(ticker.ask)) and elapsed < timeout:
             self.ib.sleep(0.1)
