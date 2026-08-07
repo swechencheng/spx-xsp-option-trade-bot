@@ -13,9 +13,9 @@ if [ "$EST_DAY" -gt 5 ]; then
     exit 0
 fi
 
-# Check if it is exactly 15:55 (3:55 PM EST)
-if [ "$EST_HOUR" -eq 15 ] && [ "$EST_MIN" -eq 55 ]; then
-    echo "$(date): Time matched 15:55 EST. Starting trading bot..."
+# Check if it is exactly 16:00 (4:00 PM EST)
+if [ "$EST_HOUR" == "16" ] && [ "$EST_MIN" == "00" ]; then
+    echo "$(date): Time matched 16:00 EST. Starting trading bot..."
     # Execute the python bot using relative paths
     venv/bin/python spx_option_trade_bot.py --ib-market --ib-port 4002
     venv/bin/python xsp_option_trade_bot.py --ib-market --ib-port 4002
