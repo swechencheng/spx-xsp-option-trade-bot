@@ -1,12 +1,30 @@
 import sys
 import argparse
 import traceback
+import logging
 from datetime import datetime
 import pytz
 import html
 import pandas as pd
 import yfinance as yf
-from ib_async import IB
+from ib_async import IB, util
+
+
+# Suppress harmless IBKR errors during option chain qualification
+class IBErrorFilter(logging.Filter):
+    def filter(self, record):
+        msg = record.getMessage()
+        if (
+            "Error 200" in msg
+            or "Unknown contract" in msg
+            or "Error 10090" in msg
+            or "Error 354" in msg
+        ):
+            return False
+        return True
+
+
+logging.getLogger("ib_async").addFilter(IBErrorFilter())
 
 from market_data_fetcher import MarketDataFetcher
 from xsp_option_finder_theory import (
@@ -218,7 +236,35 @@ class BaseOptionTradeBot:
         fetcher = MarketDataFetcher()
         risk_free_rate = fetcher.get_risk_free_rate()
 
-        df = fetcher.fetch_perfect_100_days("^SPX", "SPCFD:SPX")
+        ib = None
+        ib_spot = None
+        if args.ib_market:
+            print(
+                f"\n[*] Connecting to IBKR at {args.ib_host}:{args.ib_port} for live spot..."
+            )
+            ib = IB()
+            try:
+                ib.connect(args.ib_host, args.ib_port, clientId=args.client_id)
+                import math
+                from ib_async import Index
+
+                spx = Index("SPX", "CBOE")
+                ib.qualifyContracts(spx)
+                ib.reqMarketDataType(4)
+                spx_ticker = ib.reqMktData(spx, "", False, False)
+                ib.sleep(2)
+                ib_spot = spx_ticker.marketPrice()
+                if math.isnan(ib_spot) or ib_spot <= 0:
+                    ib_spot = spx_ticker.close
+                print(f"[*] Fetched live SPX spot from IBKR: {ib_spot}")
+            except Exception as e:
+                reason = f"Failed to connect to IBKR for spot: {e}"
+                print(f"[-] {reason}")
+                msg = self._build_header(now_est) + f"\n❌ <b>Error</b>\n{reason}"
+                notifier.send_message(msg)
+                sys.exit(1)
+
+        df = fetcher.fetch_perfect_100_days("^SPX", "SPCFD:SPX", ibkr_spot=ib_spot)
         if df is None or df.empty:
             reason = "Failed to fetch 100 days of market data"
             print(f"[-] {reason}. Exiting.")
@@ -294,19 +340,20 @@ class BaseOptionTradeBot:
         iv_provider = IVProvider()
 
         print("\n--- Connecting to IBKR ---")
-        ib = IB()
-        try:
-            ib.connect(args.ib_host, args.ib_port, clientId=args.client_id)
-        except Exception as e:
-            reason = f"Failed to connect to IBKR: {e}"
-            print(f"[-] {reason}")
-            msg = (
-                self._build_header(now_est)
-                + self._build_market_section(today_close, today_ema20, regime)
-                + f"\n❌ <b>Error</b>\n{reason}"
-            )
-            notifier.send_message(msg)
-            sys.exit(1)
+        if ib is None:
+            ib = IB()
+            try:
+                ib.connect(args.ib_host, args.ib_port, clientId=args.client_id)
+            except Exception as e:
+                reason = f"Failed to connect to IBKR: {e}"
+                print(f"[-] {reason}")
+                msg = (
+                    self._build_header(now_est)
+                    + self._build_market_section(today_close, today_ema20, regime)
+                    + f"\n❌ <b>Error</b>\n{reason}"
+                )
+                notifier.send_message(msg)
+                sys.exit(1)
 
         try:
             if args.ib_market:
