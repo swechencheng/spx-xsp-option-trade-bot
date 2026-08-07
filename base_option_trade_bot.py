@@ -27,14 +27,18 @@ class IBErrorFilter(logging.Filter):
 logging.getLogger("ib_async").addFilter(IBErrorFilter())
 
 from market_data_fetcher import MarketDataFetcher
-from xsp_option_finder_theory import (
-    OptionFinder as TheoryOptionFinder,
+from option_finder_theory import OptionFinder as TheoryOptionFinder
+from utils import (
     calculate_bs_price,
     calculate_bs_delta,
     calculate_trading_time_t,
 )
-from xsp_option_finder_ibkr import OptionFinder as IbkrOptionFinder
-from credit_spread_trader import BullPutSpreadTrader, BearCallSpreadTrader
+from option_finder_ibkr import OptionFinder as IbkrOptionFinder
+from strategy_trader import (
+    BullPutSpreadTrader,
+    BearCallSpreadTrader,
+    IronCondorTrader,
+)
 from telegram_notifier import TelegramNotifier
 from iv_provider import IVProvider
 
@@ -91,6 +95,11 @@ class BaseOptionTradeBot:
     @property
     def strike_offset(self) -> int:
         raise NotImplementedError()
+
+    @property
+    def use_iron_condor(self) -> bool:
+        """If True, execute an iron condor when the regime is bullish."""
+        return False
 
     def _build_header(self, now_est: datetime) -> str:
         """Build the common Telegram message header."""
@@ -161,6 +170,12 @@ class BaseOptionTradeBot:
             type=int,
             default=10,
             help="Seconds to wait between fill checks (default: 10)",
+        )
+        parser.add_argument(
+            "--iron-condor",
+            action="store_true",
+            default=self.use_iron_condor,
+            help="If set, executes an Iron Condor in bullish regimes (default depends on subclass)",
         )
         parser.add_argument(
             "--min-credit",
@@ -299,7 +314,7 @@ class BaseOptionTradeBot:
                 )
                 print(f"[!] {abort_reason}. Trade aborted.")
             else:
-                strategy_to_execute = "bull"
+                strategy_to_execute = "iron_condor" if args.iron_condor else "bull"
 
         elif today_close < today_ema20:
             regime = "Bearish"
@@ -361,72 +376,32 @@ class BaseOptionTradeBot:
             else:
                 finder = TheoryOptionFinder(ib)
 
-            option_type = "P" if strategy_to_execute == "bull" else "C"
-            strategy_label = (
-                "Bull Put Spread"
-                if strategy_to_execute == "bull"
-                else "Bear Call Spread"
-            )
-
-            target_delta = (
-                args.bear_delta if strategy_to_execute == "bear" else args.bull_delta
-            )
-
-            sell_leg_info = finder.find_option(
-                ticker_symbol=self.ticker_symbol,
-                trading_class=self.trading_class,
-                underlying_spot=underlying_spot,
-                iv_provider=iv_provider,
-                risk_free_rate=risk_free_rate,
-                option_type=option_type,
-                target_delta_abs=target_delta,
-                dte_target=args.dte_target,
-            )
-
-            if args.ib_market:
-                sell_leg_info["theo_price"] = sell_leg_info["market_price"]
-
-            strike_offset = self.strike_offset
-            buy_strike = sell_leg_info["strike"] + (
-                -strike_offset if option_type == "P" else strike_offset
-            )
-
-            T = calculate_trading_time_t(sell_leg_info["expiry"])
-            chain_iv = sell_leg_info["theo_iv"]
-            buy_theo_price = calculate_bs_price(
-                underlying_spot, buy_strike, T, risk_free_rate, chain_iv, option_type
-            )
-            buy_theo_delta = calculate_bs_delta(
-                underlying_spot, buy_strike, T, risk_free_rate, chain_iv, option_type
-            )
-
-            buy_leg_info = {
-                "strike": buy_strike,
-                "expiry": sell_leg_info["expiry"],
-                "theo_price": buy_theo_price,
-                "theo_delta": buy_theo_delta,
-                "option_type": option_type,
-            }
-
-            if args.ib_market:
-                buy_market = finder.fetch_market_price(
-                    ticker_symbol=self.ticker_symbol,
-                    trading_class=self.trading_class,
-                    expiry=sell_leg_info["expiry"],
-                    strike=buy_strike,
-                    option_type=option_type,
-                    theo_price_fallback=buy_theo_price,
+            if strategy_to_execute == "iron_condor":
+                strategy_label = "Iron Condor"
+                print("\n--- Finding Bull Put Spread legs ---")
+                sell_put, buy_put = self._find_spread_legs(
+                    args,
+                    finder,
+                    iv_provider,
+                    ib,
+                    underlying_spot,
+                    risk_free_rate,
+                    "P",
+                    args.bull_delta,
                 )
-                buy_leg_info["theo_price"] = buy_market["market_price"]
+                print("\n--- Finding Bear Call Spread legs ---")
+                sell_call, buy_call = self._find_spread_legs(
+                    args,
+                    finder,
+                    iv_provider,
+                    ib,
+                    underlying_spot,
+                    risk_free_rate,
+                    "C",
+                    args.bear_delta,
+                )
 
-            print(
-                f"\n--- Buy leg: {strike_offset}-wide offset ---\n"
-                f"  Sell strike: {sell_leg_info['strike']} | Buy strike: {buy_strike}\n"
-                f"  Buy Theo Price: {buy_theo_price:.2f} | Buy Theo Delta: {buy_theo_delta:.4f}"
-            )
-
-            if strategy_to_execute == "bull":
-                trader = BullPutSpreadTrader(
+                trader = IronCondorTrader(
                     ib,
                     walk_step=args.walk_step,
                     walk_interval=args.walk_interval,
@@ -435,38 +410,90 @@ class BaseOptionTradeBot:
                 )
                 trade = trader.execute(
                     ticker_symbol=self.ticker_symbol,
-                    sell_put_info=sell_leg_info,
-                    buy_put_info=buy_leg_info,
+                    sell_put_info=sell_put,
+                    buy_put_info=buy_put,
+                    sell_call_info=sell_call,
+                    buy_call_info=buy_call,
                     trading_class=self.trading_class,
+                )
+
+                credit_label = "Market Credit" if args.ib_market else "Theo Credit"
+                credit_val = round(
+                    (sell_put["theo_price"] - buy_put["theo_price"])
+                    + (sell_call["theo_price"] - buy_call["theo_price"]),
+                    2,
+                )
+
+                legs_section = (
+                    f"  Sell Put:  {self.ticker_symbol} {sell_put['strike']}P @ Δ{sell_put['theo_delta']:.4f}\n"
+                    f"  Buy Put:   {self.ticker_symbol} {buy_put['strike']}P @ Δ{buy_put['theo_delta']:.4f}\n"
+                    f"  Sell Call: {self.ticker_symbol} {sell_call['strike']}C @ Δ{sell_call['theo_delta']:.4f}\n"
+                    f"  Buy Call:  {self.ticker_symbol} {buy_call['strike']}C @ Δ{buy_call['theo_delta']:.4f}\n"
+                    f"  {credit_label}: ${credit_val:.2f}\n"
+                    f"  Qty: {args.quantity}\n"
                 )
             else:
-                trader = BearCallSpreadTrader(
+                option_type = "P" if strategy_to_execute == "bull" else "C"
+                strategy_label = (
+                    "Bull Put Spread"
+                    if strategy_to_execute == "bull"
+                    else "Bear Call Spread"
+                )
+                target_delta = (
+                    args.bear_delta
+                    if strategy_to_execute == "bear"
+                    else args.bull_delta
+                )
+
+                sell_leg, buy_leg = self._find_spread_legs(
+                    args,
+                    finder,
+                    iv_provider,
                     ib,
-                    walk_step=args.walk_step,
-                    walk_interval=args.walk_interval,
-                    min_credit=args.min_credit,
-                    quantity=args.quantity,
-                )
-                trade = trader.execute(
-                    ticker_symbol=self.ticker_symbol,
-                    sell_call_info=sell_leg_info,
-                    buy_call_info=buy_leg_info,
-                    trading_class=self.trading_class,
+                    underlying_spot,
+                    risk_free_rate,
+                    option_type,
+                    target_delta,
                 )
 
-            credit_label = "Market Credit" if args.ib_market else "Theo Credit"
-            credit_val = round(
-                sell_leg_info["theo_price"] - buy_leg_info["theo_price"], 2
-            )
+                if strategy_to_execute == "bull":
+                    trader = BullPutSpreadTrader(
+                        ib,
+                        walk_step=args.walk_step,
+                        walk_interval=args.walk_interval,
+                        min_credit=args.min_credit,
+                        quantity=args.quantity,
+                    )
+                    trade = trader.execute(
+                        ticker_symbol=self.ticker_symbol,
+                        sell_put_info=sell_leg,
+                        buy_put_info=buy_leg,
+                        trading_class=self.trading_class,
+                    )
+                else:
+                    trader = BearCallSpreadTrader(
+                        ib,
+                        walk_step=args.walk_step,
+                        walk_interval=args.walk_interval,
+                        min_credit=args.min_credit,
+                        quantity=args.quantity,
+                    )
+                    trade = trader.execute(
+                        ticker_symbol=self.ticker_symbol,
+                        sell_call_info=sell_leg,
+                        buy_call_info=buy_leg,
+                        trading_class=self.trading_class,
+                    )
 
-            legs_section = (
-                f"  Sell: {self.ticker_symbol} {sell_leg_info['strike']}{option_type}"
-                f" @ Δ{sell_leg_info['theo_delta']:.4f}\n"
-                f"  Buy:  {self.ticker_symbol} {buy_leg_info['strike']}{option_type}"
-                f" @ Δ{buy_leg_info['theo_delta']:.4f}\n"
-                f"  {credit_label}: ${credit_val:.2f}\n"
-                f"  Qty: {args.quantity}\n"
-            )
+                credit_label = "Market Credit" if args.ib_market else "Theo Credit"
+                credit_val = round(sell_leg["theo_price"] - buy_leg["theo_price"], 2)
+
+                legs_section = (
+                    f"  Sell: {self.ticker_symbol} {sell_leg['strike']}{option_type} @ Δ{sell_leg['theo_delta']:.4f}\n"
+                    f"  Buy:  {self.ticker_symbol} {buy_leg['strike']}{option_type} @ Δ{buy_leg['theo_delta']:.4f}\n"
+                    f"  {credit_label}: ${credit_val:.2f}\n"
+                    f"  Qty: {args.quantity}\n"
+                )
 
             if trade is not None:
                 fill_price = abs(trade.orderStatus.avgFillPrice)
@@ -483,11 +510,124 @@ class BaseOptionTradeBot:
                     + self._build_market_section(today_close, today_ema20, regime)
                     + f"\n⛔ <b>{strategy_label} — NOT FILLED</b>\n"
                     + f"<pre>{legs_section}</pre>"
-                    + "Order cancelled (credit below minimum or rejected)."
+                    + "\nWalk-the-book aborted (credit dropped below minimum threshold)."
                 )
-
             notifier.send_message(msg)
 
+        except Exception as e:
+            tb = traceback.format_exc()
+            reason = f"Execution error: {e}"
+            print(f"[-] {reason}")
+            print(tb)
+            msg = (
+                self._build_header(now_est)
+                + self._build_market_section(today_close, today_ema20, regime)
+                + f"\n❌ <b>Error</b>\n{reason}"
+            )
+            notifier.send_message(msg)
+            sys.exit(1)
         finally:
-            ib.disconnect()
-            print("\nSafely disconnected from IBKR.")
+            if ib and ib.isConnected():
+                ib.disconnect()
+
+    def _find_spread_legs(
+        self,
+        args,
+        finder,
+        iv_provider,
+        ib,
+        underlying_spot,
+        risk_free_rate,
+        option_type,
+        target_delta,
+    ):
+        """Helper to find the delta-based sell leg and 1-strike away buy leg."""
+        sell_leg_info = finder.find_option(
+            ticker_symbol=self.ticker_symbol,
+            trading_class=self.trading_class,
+            underlying_spot=underlying_spot,
+            iv_provider=iv_provider,
+            risk_free_rate=risk_free_rate,
+            option_type=option_type,
+            target_delta_abs=target_delta,
+            dte_target=args.dte_target,
+        )
+
+        if args.ib_market:
+            sell_leg_info["theo_price"] = sell_leg_info["market_price"]
+
+        strike_offset = self.strike_offset
+        buy_strike = sell_leg_info["strike"] + (
+            -strike_offset if option_type == "P" else strike_offset
+        )
+
+        T = calculate_trading_time_t(sell_leg_info["expiry"])
+
+        # IV Per Leg: specifically fetch the IV for the buy strike
+        buy_iv = sell_leg_info["theo_iv"]
+        if args.ib_market:
+            from ib_async import Option
+
+            buy_contract = Option(
+                self.ticker_symbol,
+                sell_leg_info["expiry"],
+                buy_strike,
+                option_type,
+                "SMART",
+                tradingClass=self.trading_class,
+            )
+            ib.qualifyContracts(buy_contract)
+            if buy_contract.conId:
+                iv_data = ib.run(
+                    iv_provider.get_iv(
+                        ib, buy_contract, self.ticker_symbol, sell_leg_info["expiry"]
+                    )
+                )
+                if iv_data.get("model_iv") is not None:
+                    buy_iv = iv_data["model_iv"]
+                elif iv_data.get("ask_iv") is not None:
+                    buy_iv = iv_data["ask_iv"]
+        else:
+            # Theoretical mode: fetch per-leg IV from yfinance
+            iv_data = iv_provider._get_iv_from_yfinance(
+                symbol=self.ticker_symbol,
+                strike=float(buy_strike),
+                exp_date=sell_leg_info["expiry"],
+                right=option_type,
+            )
+            if iv_data.get("model_iv") is not None:
+                buy_iv = iv_data["model_iv"]
+
+        buy_theo_price = calculate_bs_price(
+            underlying_spot, buy_strike, T, risk_free_rate, buy_iv, option_type
+        )
+        buy_theo_delta = calculate_bs_delta(
+            underlying_spot, buy_strike, T, risk_free_rate, buy_iv, option_type
+        )
+
+        buy_leg_info = {
+            "strike": buy_strike,
+            "expiry": sell_leg_info["expiry"],
+            "theo_price": buy_theo_price,
+            "theo_delta": buy_theo_delta,
+            "option_type": option_type,
+            "theo_iv": buy_iv,
+        }
+
+        if args.ib_market:
+            buy_market = finder.fetch_market_price(
+                ticker_symbol=self.ticker_symbol,
+                trading_class=self.trading_class,
+                expiry=sell_leg_info["expiry"],
+                strike=buy_strike,
+                option_type=option_type,
+                theo_price_fallback=buy_theo_price,
+            )
+            buy_leg_info["theo_price"] = buy_market["market_price"]
+
+        print(
+            f"\n--- Buy leg: {strike_offset}-wide offset ---\n"
+            f"  Sell strike: {sell_leg_info['strike']} | Buy strike: {buy_strike}\n"
+            f"  Buy Theo Price: {buy_theo_price:.2f} | Buy Theo Delta: {buy_theo_delta:.4f} | IV: {buy_iv:.4f}"
+        )
+        return sell_leg_info, buy_leg_info
