@@ -138,14 +138,14 @@ class BaseOptionTradeBot:
         parser.add_argument(
             "--bull-delta",
             type=float,
-            default=0.20,
-            help="Sell leg target delta for Bull Put Spread (default: 0.20)",
+            default=0.05,
+            help="Sell leg target delta for Bull Put Spread (default: 0.05)",
         )
         parser.add_argument(
             "--bear-delta",
             type=float,
-            default=0.09,
-            help="Sell leg target delta for Bear Call Spread (default: 0.09)",
+            default=0.075,
+            help="Sell leg target delta for Bear Call Spread (default: 0.075)",
         )
         parser.add_argument(
             "--dte-target",
@@ -168,8 +168,8 @@ class BaseOptionTradeBot:
         parser.add_argument(
             "--walk-interval",
             type=int,
-            default=10,
-            help="Seconds to wait between fill checks (default: 10)",
+            default=5,
+            help="Seconds to wait between fill checks (default: 5)",
         )
         parser.add_argument(
             "--iron-condor",
