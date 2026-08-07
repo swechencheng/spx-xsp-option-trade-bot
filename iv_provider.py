@@ -60,14 +60,41 @@ class IVProvider:
         # or we just didn't get any IV data for this specific contract, fall back to yfinance.
         if self._use_yfinance or is_empty:
             logger.info(f"[IVProvider] Retrying {symbol} IV using yfinance fallback...")
-            return self._get_iv_from_yfinance(
+            iv_data = self._get_iv_from_yfinance(
                 symbol=symbol,
                 strike=float(contract.strike),
                 exp_date=exp_date,
                 right=contract.right,
             )
 
+        # Global fallback to VIX if both IBKR and yfinance fail
+        if (
+            iv_data.get("model_iv") is None
+            and iv_data.get("bid_iv") is None
+            and iv_data.get("ask_iv") is None
+        ):
+            logger.info(f"[IVProvider] Both legs failed IV fetch. Using VIX fallback.")
+            vix_val = self._fetch_vix_iv()
+            if vix_val is not None:
+                iv_data["model_iv"] = vix_val
+
         return iv_data
+
+    def _fetch_vix_iv(self) -> float | None:
+        """Fetch VIX as a quick proxy for ATM implied volatility."""
+        try:
+            vix = yf.Ticker("^VIX")
+            hist = vix.history(period="1d")
+            if not hist.empty:
+                vix_val = float(hist["Close"].iloc[-1]) / 100.0
+                if vix_val > 0.0:
+                    logger.info(
+                        f"[IVProvider] Fetched VIX as IV fallback: {vix_val:.4f} ({vix_val * 100:.2f}%)"
+                    )
+                    return vix_val
+        except Exception as e:
+            logger.warning(f"[IVProvider] Warning: Could not fetch VIX: {e}")
+        return None
 
     # ── IBKR strategy ────────────────────────────────────────────
 

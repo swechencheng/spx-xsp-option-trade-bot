@@ -2,7 +2,7 @@ import math
 import datetime
 from ib_async import IB, Index, Option
 
-from xsp_option_finder_theory import calculate_trading_time_t
+from option_finder_theory import calculate_trading_time_t
 
 
 class OptionFinder:

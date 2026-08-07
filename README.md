@@ -26,7 +26,7 @@ The bot runs on a daily schedule, specifically timed for **3:55 PM EST** (just b
 
 Depending on the market regime, it executes one of two strategies:
 
-1. **Bullish Regime (Close > EMA20)**: Executes a **Bull Put Credit Spread**.
+1. **Bullish Regime (Close > EMA20)**: Executes a **Bull Put Credit Spread** (or an **Iron Condor** if `--iron-condor` is set, which is the default for SPX).
 2. **Bearish Regime (Close < EMA20)**: Executes a **Bear Call Credit Spread** _(disabled by default; enable with `--add-bear`)_.
 
 The bot is strictly defensive. It will **abort** the trade under the following conditions:
@@ -79,8 +79,8 @@ While highly probable, this strategy is not without risks. You must be aware of 
 ## Architecture & Modules
 
 - `market_data_fetcher.py`: Handles data ingestion. Scrapes real-time snapshot data from TradingView (or directly from IBKR if `--ib-market` is used) and merges it with historical YFinance data to create a perfect 100-day OHLC dataset.
-- `spx_option_finder_ibkr.py` & `xsp_option_finder_theory.py`: The quantitative engines. They find the exact sell-leg strike price that matches the target Delta using either the Black-Scholes math (theory) or IBKR's live model Greeks (market).
-- `credit_spread_trader.py`: The execution engine. Contains the `BaseCreditSpreadTrader` class, handling the IBKR asynchronous API, order creation, and the automated limit-price repricing loop (Walk the Book).
+- `option_finder_ibkr.py` & `option_finder_theory.py`: The quantitative engines. They find the exact sell-leg strike price that matches the target Delta using either the Black-Scholes math (theory) or IBKR's live model Greeks (market).
+- `strategy_trader.py`: The execution engine. Contains the `BaseCreditSpreadTrader` and `IronCondorTrader` classes, handling the IBKR asynchronous API, order creation, and the automated limit-price repricing loop (Walk the Book).
 - `base_option_trade_bot.py`: The core brain. Calculates the EMA20, evaluates the bullish/bearish rules, and makes the final decision to trade or abort.
 - `spx_option_trade_bot.py` & `xsp_option_trade_bot.py`: The entry points that subclass the base bot and set index-specific constants (like default walk steps, contract multipliers, and symbol names).
 - `iv_provider.py`: Handles fetching implied volatility from either IBKR directly or defaulting to Yahoo Finance chains for theoretical calculations.
