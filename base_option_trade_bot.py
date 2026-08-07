@@ -43,17 +43,6 @@ from telegram_notifier import TelegramNotifier
 from iv_provider import IVProvider
 
 
-def count_consecutive_true(series: pd.Series) -> int:
-    """Counts consecutive True values from the end of a boolean pandas Series."""
-    count = 0
-    for val in series.iloc[::-1]:
-        if val:
-            count += 1
-        else:
-            break
-    return count
-
-
 def is_valid_trading_day() -> bool:
     """Checks if today is a valid trading day by comparing US/Eastern date with Yahoo Finance's latest ^SPX data."""
     try:
@@ -152,12 +141,6 @@ class BaseOptionTradeBot:
             type=int,
             default=1,
             help="Target days-to-expiration (default: 1)",
-        )
-        parser.add_argument(
-            "--max-ema-gap",
-            type=int,
-            default=20,
-            help="Max continuous days for EMA gap (default: 20)",
         )
         parser.add_argument(
             "--walk-step",
@@ -305,16 +288,8 @@ class BaseOptionTradeBot:
 
         if today_close > today_ema20:
             regime = "Bullish"
-            gap_streak = count_consecutive_true(df["Low"] > df["EMA20"])
-            print(f"[*] Bullish Regime detected. EMA Gap streak: {gap_streak} days.")
-
-            if gap_streak > args.max_ema_gap:
-                abort_reason = (
-                    f"Overextended uptrend (gap {gap_streak} > {args.max_ema_gap} days)"
-                )
-                print(f"[!] {abort_reason}. Trade aborted.")
-            else:
-                strategy_to_execute = "iron_condor" if args.iron_condor else "bull"
+            print("[*] Bullish Regime detected.")
+            strategy_to_execute = "iron_condor" if args.iron_condor else "bull"
 
         elif today_close < today_ema20:
             regime = "Bearish"
@@ -327,13 +302,7 @@ class BaseOptionTradeBot:
                 abort_reason = f"Today is a bull bar (Close {today_close:.2f} > Open {today_open:.2f})"
                 print(f"[!] {abort_reason}. Trade aborted.")
             else:
-                gap_streak = count_consecutive_true(df["High"] < df["EMA20"])
-                print(f"[*] EMA Gap streak: {gap_streak} days.")
-                if gap_streak > args.max_ema_gap:
-                    abort_reason = f"Overextended downtrend (gap {gap_streak} > {args.max_ema_gap} days)"
-                    print(f"[!] {abort_reason}. Trade aborted.")
-                else:
-                    strategy_to_execute = "bear"
+                strategy_to_execute = "bear"
         else:
             regime = "Neutral"
             abort_reason = "Close equals EMA20 exactly — no trade signal"

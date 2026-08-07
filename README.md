@@ -174,7 +174,6 @@ Available arguments (all default to the original strategy constants):
 - `--bull-delta`: Sell leg target delta for Bull Put Spread (default: 0.05)
 - `--bear-delta`: Sell leg target delta for Bear Call Spread (default: 0.075)
 - `--dte-target`: Target days-to-expiration (default: 1)
-- `--max-ema-gap`: Max continuous days for EMA gap (default: 20)
 - `--walk-step`: Credit reduction per repricing round (default: 0.01)
 - `--walk-interval`: Seconds to wait between fill checks (default: 5)
 - `--min-credit`: Minimum acceptable net credit (default: 0.09)
