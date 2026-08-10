@@ -17,6 +17,6 @@ fi
 if [ "$EST_HOUR" == "16" ] && [ "$EST_MIN" == "00" ]; then
     echo "$(date): Time matched 16:00 EST. Starting trading bot..."
     # Execute the python bot using relative paths
-    venv/bin/python spx_option_trade_bot.py --ib-market --ib-port 4002
+    venv/bin/python spx_option_trade_bot.py --ib-market --ib-port 4002 --iron-condor
     venv/bin/python xsp_option_trade_bot.py --ib-market --ib-port 4002
 fi
