@@ -251,7 +251,13 @@ class OptionFinder:
 
         timeout = 5.0
         elapsed = 0.0
-        while (math.isnan(ticker.bid) or math.isnan(ticker.ask)) and elapsed < timeout:
+        while (
+            math.isnan(ticker.bid)
+            or math.isnan(ticker.ask)
+            or not ticker.modelGreeks
+            or ticker.modelGreeks.delta is None
+            or math.isnan(ticker.modelGreeks.delta)
+        ) and elapsed < timeout:
             self.ib.sleep(0.1)
             elapsed += 0.1
 
@@ -271,8 +277,26 @@ class OptionFinder:
                 else theo_price_fallback
             )
 
+        market_delta = None
+        market_iv = None
+        if ticker.modelGreeks:
+            if ticker.modelGreeks.delta is not None and not math.isnan(
+                ticker.modelGreeks.delta
+            ):
+                market_delta = ticker.modelGreeks.delta
+            if ticker.modelGreeks.impliedVol is not None and not math.isnan(
+                ticker.modelGreeks.impliedVol
+            ):
+                market_iv = ticker.modelGreeks.impliedVol
+
         print(
             f"  Snapshot Market Price: {market_price:.2f} (Bid: {bid:.2f}, Ask: {ask:.2f})"
         )
 
-        return {"market_price": market_price, "bid": bid, "ask": ask}
+        return {
+            "market_price": market_price,
+            "bid": bid,
+            "ask": ask,
+            "market_delta": market_delta,
+            "market_iv": market_iv,
+        }
