@@ -50,29 +50,33 @@ def calculate_trading_time_t(exp_date_str: str) -> float:
     return total_minutes / (252 * 6.75 * 60.0)
 
 
-def calculate_bs_price(S, K, T, r, sigma, option_type="P"):
-    """Calculate theoretical contract price using local Black-Scholes model."""
+def calculate_bs_price(S, K, T, r, sigma, option_type="P", q=0.0):
+    """Calculate theoretical contract price using local Black-Scholes model with continuous dividend yield."""
     if T <= 0 or sigma <= 0:
         return max(0.0, S - K) if option_type.upper() == "C" else max(0.0, K - S)
 
-    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    d1 = (math.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     d2 = d1 - sigma * math.sqrt(T)
 
     if option_type.upper() == "C":
-        price = S * norm.cdf(d1) - K * math.exp(-r * T) * norm.cdf(d2)
+        price = S * math.exp(-q * T) * norm.cdf(d1) - K * math.exp(-r * T) * norm.cdf(
+            d2
+        )
     else:
-        price = K * math.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+        price = K * math.exp(-r * T) * norm.cdf(-d2) - S * math.exp(-q * T) * norm.cdf(
+            -d1
+        )
 
     return price
 
 
-def calculate_bs_delta(S, K, T, r, sigma, option_type="P"):
-    """Calculate theoretical contract delta using local Black-Scholes model."""
+def calculate_bs_delta(S, K, T, r, sigma, option_type="P", q=0.0):
+    """Calculate theoretical contract delta using local Black-Scholes model with continuous dividend yield."""
     if T <= 0 or sigma <= 0:
         return 0.0
 
-    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    d1 = (math.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     if option_type.upper() == "C":
-        return norm.cdf(d1)
+        return math.exp(-q * T) * norm.cdf(d1)
     else:
-        return norm.cdf(d1) - 1.0
+        return math.exp(-q * T) * (norm.cdf(d1) - 1.0)

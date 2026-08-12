@@ -567,11 +567,12 @@ class BaseOptionTradeBot:
             if iv_data.get("model_iv") is not None:
                 buy_iv = iv_data["model_iv"]
 
+        q = 0.014 if self.ticker_symbol in ["SPX", "XSP"] else 0.0
         buy_theo_price = calculate_bs_price(
-            underlying_spot, buy_strike, T, risk_free_rate, buy_iv, option_type
+            underlying_spot, buy_strike, T, risk_free_rate, buy_iv, option_type, q=q
         )
         buy_theo_delta = calculate_bs_delta(
-            underlying_spot, buy_strike, T, risk_free_rate, buy_iv, option_type
+            underlying_spot, buy_strike, T, risk_free_rate, buy_iv, option_type, q=q
         )
 
         buy_leg_info = {
