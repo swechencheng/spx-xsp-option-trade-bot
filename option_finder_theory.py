@@ -121,6 +121,9 @@ class OptionFinder:
         min_delta_error = float("inf")
         best_theo_delta = 0.0
 
+        # Approximately annual dividend yield for SPX/XSP
+        q = 0.014 if ticker_symbol in ["SPX", "XSP"] else 0.0
+
         for strike in sorted(cboe_chain.strikes):
             # Narrow search range: skip deep OTM/ITM to save compute
             if abs(strike - underlying_spot) > (underlying_spot * 0.15):
@@ -131,7 +134,7 @@ class OptionFinder:
                 continue
 
             calc_delta = calculate_bs_delta(
-                underlying_spot, strike, T, risk_free_rate, iv, option_type
+                underlying_spot, strike, T, risk_free_rate, iv, option_type, q=q
             )
             error = abs(calc_delta - target_signed_delta)
 
@@ -146,7 +149,7 @@ class OptionFinder:
         )
 
         best_theo_price = calculate_bs_price(
-            underlying_spot, best_strike, T, risk_free_rate, iv, option_type
+            underlying_spot, best_strike, T, risk_free_rate, iv, option_type, q=q
         )
         print(f"  Model Theoretical Price: {best_theo_price:.2f}")
 
