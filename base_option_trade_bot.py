@@ -593,10 +593,16 @@ class BaseOptionTradeBot:
                 theo_price_fallback=buy_theo_price,
             )
             buy_leg_info["theo_price"] = buy_market["market_price"]
+            if buy_market.get("market_delta") is not None:
+                buy_leg_info["theo_delta"] = buy_market["market_delta"]
+                buy_theo_delta = buy_market["market_delta"]
+            if buy_market.get("market_iv") is not None:
+                buy_leg_info["theo_iv"] = buy_market["market_iv"]
+                buy_iv = buy_market["market_iv"]
 
         print(
             f"\n--- Buy leg: {strike_offset}-wide offset ---\n"
             f"  Sell strike: {sell_leg_info['strike']} | Buy strike: {buy_strike}\n"
-            f"  Buy Theo Price: {buy_theo_price:.2f} | Buy Theo Delta: {buy_theo_delta:.4f} | IV: {buy_iv:.4f}"
+            f"  Buy Price (Theo/Market): {buy_leg_info['theo_price']:.2f} | Buy Delta (Theo/Market): {buy_theo_delta:.4f} | IV: {buy_iv:.4f}"
         )
         return sell_leg_info, buy_leg_info
