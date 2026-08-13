@@ -117,8 +117,8 @@ class OptionFinder:
         )  # Fallback to delayed-frozen if market is closed or not subscribed
         tickers = self.ib.reqTickers(*valid_contracts)
 
-        print("Waiting for option Greeks to populate...")
-        timeout = 10.0
+        print(f"Waiting for option Greeks to populate ({len(tickers)} contracts)...")
+        timeout = 15.0
         elapsed = 0.0
         while elapsed < timeout:
             populated = sum(
@@ -128,11 +128,29 @@ class OptionFinder:
                 and t.modelGreeks.delta is not None
                 and not math.isnan(t.modelGreeks.delta)
             )
-            # Wait until at least 80% of contracts have populated greeks, or timeout
-            if populated >= len(tickers) * 0.8:
+            if populated >= len(tickers):
                 break
             self.ib.sleep(0.1)
             elapsed += 0.1
+
+        # Log population stats for diagnostics
+        populated_count = sum(
+            1
+            for t in tickers
+            if t.modelGreeks
+            and t.modelGreeks.delta is not None
+            and not math.isnan(t.modelGreeks.delta)
+        )
+        unpopulated = [
+            t.contract.strike
+            for t in tickers
+            if not t.modelGreeks
+            or t.modelGreeks.delta is None
+            or math.isnan(t.modelGreeks.delta)
+        ]
+        print(f"  Greeks populated: {populated_count}/{len(tickers)}")
+        if unpopulated:
+            print(f"  ⚠️  Missing Greeks for strikes: {unpopulated}")
 
         target_signed_delta = (
             target_delta_abs if option_type.upper() == "C" else -target_delta_abs
