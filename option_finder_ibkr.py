@@ -154,7 +154,7 @@ class OptionFinder:
 
         # Abort if too many contracts failed to populate — the strike
         # selection would be unreliable and could pick a dangerous delta.
-        min_population_rate = 0.90
+        min_population_rate = 0.99
         if len(tickers) > 0 and populated_count / len(tickers) < min_population_rate:
             raise Exception(
                 f"Greeks population too low: {populated_count}/{len(tickers)} "
