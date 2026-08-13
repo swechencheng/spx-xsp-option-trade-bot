@@ -152,6 +152,17 @@ class OptionFinder:
         if unpopulated:
             print(f"  ⚠️  Missing Greeks for strikes: {unpopulated}")
 
+        # Abort if too many contracts failed to populate — the strike
+        # selection would be unreliable and could pick a dangerous delta.
+        min_population_rate = 0.90
+        if len(tickers) > 0 and populated_count / len(tickers) < min_population_rate:
+            raise Exception(
+                f"Greeks population too low: {populated_count}/{len(tickers)} "
+                f"({populated_count / len(tickers) * 100:.0f}% < {min_population_rate * 100:.0f}% minimum). "
+                f"Aborting to avoid unreliable strike selection. "
+                f"Check your IBKR market data subscriptions."
+            )
+
         target_signed_delta = (
             target_delta_abs if option_type.upper() == "C" else -target_delta_abs
         )
