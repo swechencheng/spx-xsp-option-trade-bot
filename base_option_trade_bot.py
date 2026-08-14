@@ -252,7 +252,7 @@ class BaseOptionTradeBot:
                 spx_ticker = ib.reqMktData(spx, "", False, False)
                 ib.sleep(2)
                 ib_spot = spx_ticker.marketPrice()
-                used_fallback = False
+                spot_source = "marketPrice"
                 if math.isnan(ib_spot) or ib_spot <= 0:
                     # Try last trade price before falling back to close
                     if (
@@ -261,32 +261,26 @@ class BaseOptionTradeBot:
                         and spx_ticker.last > 0
                     ):
                         ib_spot = spx_ticker.last
-                        print(
-                            f"[⚠️] marketPrice() unavailable, using last trade: {ib_spot}"
-                        )
-                    elif not math.isnan(spx_ticker.close) and spx_ticker.close > 0:
+                        spot_source = "last trade"
+                    elif (
+                        hasattr(spx_ticker, "close")
+                        and not math.isnan(spx_ticker.close)
+                        and spx_ticker.close > 0
+                    ):
                         ib_spot = spx_ticker.close
-                        used_fallback = True
-                        print(
-                            f"[⚠️] WARNING: marketPrice() and last trade unavailable. "
-                            f"Falling back to previous close: {ib_spot}. "
-                            f"This likely means your IBKR account lacks a market data subscription!"
-                        )
+                        spot_source = "previous close (⚠️ STALE)"
                     else:
-                        reason = (
-                            "IBKR returned no usable spot price (marketPrice, last, and close all unavailable). "
-                            "Check your market data subscriptions."
+                        # All IBKR sources failed — let downstream TradingView fallback handle it
+                        ib_spot = None
+                        spot_source = None
+                        print(
+                            "[⚠️] WARNING: All IBKR spot sources unavailable (marketPrice, last, close). "
+                            "Will fall back to TradingView for live snapshot."
                         )
-                        print(f"[❌] {reason}")
-                        msg = (
-                            self._build_header(now_est) + f"\n❌ <b>Error</b>\n{reason}"
-                        )
-                        notifier.send_message(msg)
-                        sys.exit(1)
-                print(
-                    f"[*] Fetched live SPX spot from IBKR: {ib_spot}"
-                    f"{' (⚠️ STALE - previous close fallback!)' if used_fallback else ''}"
-                )
+                if ib_spot is not None:
+                    print(
+                        f"[*] Fetched live SPX spot from IBKR: {ib_spot} (via {spot_source})"
+                    )
             except Exception as e:
                 reason = f"Failed to connect to IBKR for spot: {e}"
                 print(f"[-] {reason}")
