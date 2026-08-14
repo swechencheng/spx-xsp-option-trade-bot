@@ -514,10 +514,13 @@ class BaseOptionTradeBot:
             reason = f"Execution error: {e}"
             print(f"[-] {reason}")
             print(tb)
+            import html as html_mod
+
+            safe_reason = html_mod.escape(str(reason))
             msg = (
                 self._build_header(now_est)
                 + self._build_market_section(today_close, today_ema20, regime)
-                + f"\n❌ <b>Error</b>\n{reason}"
+                + f"\n❌ <b>Error</b>\n{safe_reason}"
             )
             notifier.send_message(msg)
             sys.exit(1)
