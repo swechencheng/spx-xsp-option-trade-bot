@@ -172,7 +172,7 @@ Available arguments (all default to the original strategy constants):
 - `--ib-port`: IBKR Port (default: 7497)
 - `--client-id`: IBKR Client ID (default: 15)
 - `--bull-delta`: Sell leg target delta for Bull Put Spread (default: 0.05)
-- `--bear-delta`: Sell leg target delta for Bear Call Spread (default: 0.075)
+- `--bear-delta`: Sell leg target delta for Bear Call Spread (default: 0.05)
 - `--dte-target`: Target days-to-expiration (default: 1)
 - `--walk-step`: Credit reduction per repricing round (default: 0.01)
 - `--walk-interval`: Seconds to wait between fill checks (default: 5)

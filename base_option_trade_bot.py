@@ -133,8 +133,8 @@ class BaseOptionTradeBot:
         parser.add_argument(
             "--bear-delta",
             type=float,
-            default=0.075,
-            help="Sell leg target delta for Bear Call Spread (default: 0.075)",
+            default=0.05,
+            help="Sell leg target delta for Bear Call Spread (default: 0.05)",
         )
         parser.add_argument(
             "--dte-target",
