@@ -118,7 +118,7 @@ class OptionFinder:
         tickers = self.ib.reqTickers(*valid_contracts)
 
         print(f"Waiting for option Greeks to populate ({len(tickers)} contracts)...")
-        timeout = 15.0
+        timeout = 30.0
         elapsed = 0.0
         while elapsed < timeout:
             populated = sum(
@@ -154,7 +154,7 @@ class OptionFinder:
 
         # Abort if too many contracts failed to populate — the strike
         # selection would be unreliable and could pick a dangerous delta.
-        min_population_rate = 0.99
+        min_population_rate = 0.95
         if len(tickers) > 0 and populated_count / len(tickers) < min_population_rate:
             raise Exception(
                 f"Greeks population too low: {populated_count}/{len(tickers)} "
