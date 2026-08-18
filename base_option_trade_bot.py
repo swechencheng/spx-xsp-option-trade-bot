@@ -366,148 +366,179 @@ class BaseOptionTradeBot:
                 sys.exit(1)
 
         try:
+            finders_to_try = []
             if args.ib_market:
-                finder = IbkrOptionFinder(ib)
-            else:
-                finder = TheoryOptionFinder(ib)
+                finders_to_try.append((True, IbkrOptionFinder(ib)))
+            finders_to_try.append((False, TheoryOptionFinder(ib)))
 
-            if strategy_to_execute == "iron_condor":
-                strategy_label = "Iron Condor"
-                print("\n--- Finding Bull Put Spread legs ---")
-                sell_put, buy_put = self._find_spread_legs(
-                    args,
-                    finder,
-                    iv_provider,
-                    ib,
-                    underlying_spot,
-                    risk_free_rate,
-                    "P",
-                    args.bull_delta,
-                )
-                print("\n--- Finding Bear Call Spread legs ---")
-                sell_call, buy_call = self._find_spread_legs(
-                    args,
-                    finder,
-                    iv_provider,
-                    ib,
-                    underlying_spot,
-                    risk_free_rate,
-                    "C",
-                    args.bear_delta,
-                )
+            original_ib_market = args.ib_market
 
-                trader = IronCondorTrader(
-                    ib,
-                    walk_step=args.walk_step,
-                    walk_interval=args.walk_interval,
-                    min_credit=args.min_credit,
-                    quantity=args.quantity,
-                )
-                trade = trader.execute(
-                    ticker_symbol=self.ticker_symbol,
-                    sell_put_info=sell_put,
-                    buy_put_info=buy_put,
-                    sell_call_info=sell_call,
-                    buy_call_info=buy_call,
-                    trading_class=self.trading_class,
-                )
+            for attempt_idx, (is_ib_market, finder) in enumerate(finders_to_try):
+                args.ib_market = is_ib_market
+                try:
 
-                credit_label = "Market Credit" if args.ib_market else "Theo Credit"
-                credit_val = round(
-                    (sell_put["theo_price"] - buy_put["theo_price"])
-                    + (sell_call["theo_price"] - buy_call["theo_price"]),
-                    2,
-                )
+                    if strategy_to_execute == "iron_condor":
+                        strategy_label = "Iron Condor"
+                        print("\n--- Finding Bull Put Spread legs ---")
+                        sell_put, buy_put = self._find_spread_legs(
+                            args,
+                            finder,
+                            iv_provider,
+                            ib,
+                            underlying_spot,
+                            risk_free_rate,
+                            "P",
+                            args.bull_delta,
+                        )
+                        print("\n--- Finding Bear Call Spread legs ---")
+                        sell_call, buy_call = self._find_spread_legs(
+                            args,
+                            finder,
+                            iv_provider,
+                            ib,
+                            underlying_spot,
+                            risk_free_rate,
+                            "C",
+                            args.bear_delta,
+                        )
 
-                legs_section = (
-                    f"  Sell Put:  {self.ticker_symbol} {sell_put['strike']}P @ Δ{sell_put['theo_delta']:.4f}\n"
-                    f"  Buy Put:   {self.ticker_symbol} {buy_put['strike']}P @ Δ{buy_put['theo_delta']:.4f}\n"
-                    f"  Sell Call: {self.ticker_symbol} {sell_call['strike']}C @ Δ{sell_call['theo_delta']:.4f}\n"
-                    f"  Buy Call:  {self.ticker_symbol} {buy_call['strike']}C @ Δ{buy_call['theo_delta']:.4f}\n"
-                    f"  {credit_label}: ${credit_val:.2f}\n"
-                    f"  Qty: {args.quantity}\n"
-                )
-            else:
-                option_type = "P" if strategy_to_execute == "bull" else "C"
-                strategy_label = (
-                    "Bull Put Spread"
-                    if strategy_to_execute == "bull"
-                    else "Bear Call Spread"
-                )
-                target_delta = (
-                    args.bear_delta
-                    if strategy_to_execute == "bear"
-                    else args.bull_delta
-                )
+                        trader = IronCondorTrader(
+                            ib,
+                            walk_step=args.walk_step,
+                            walk_interval=args.walk_interval,
+                            min_credit=args.min_credit,
+                            quantity=args.quantity,
+                        )
+                        trade = trader.execute(
+                            ticker_symbol=self.ticker_symbol,
+                            sell_put_info=sell_put,
+                            buy_put_info=buy_put,
+                            sell_call_info=sell_call,
+                            buy_call_info=buy_call,
+                            trading_class=self.trading_class,
+                        )
 
-                sell_leg, buy_leg = self._find_spread_legs(
-                    args,
-                    finder,
-                    iv_provider,
-                    ib,
-                    underlying_spot,
-                    risk_free_rate,
-                    option_type,
-                    target_delta,
-                )
+                        credit_label = (
+                            "Market Credit" if args.ib_market else "Theo Credit"
+                        )
+                        credit_val = round(
+                            (sell_put["theo_price"] - buy_put["theo_price"])
+                            + (sell_call["theo_price"] - buy_call["theo_price"]),
+                            2,
+                        )
 
-                if strategy_to_execute == "bull":
-                    trader = BullPutSpreadTrader(
-                        ib,
-                        walk_step=args.walk_step,
-                        walk_interval=args.walk_interval,
-                        min_credit=args.min_credit,
-                        quantity=args.quantity,
-                    )
-                    trade = trader.execute(
-                        ticker_symbol=self.ticker_symbol,
-                        sell_put_info=sell_leg,
-                        buy_put_info=buy_leg,
-                        trading_class=self.trading_class,
-                    )
-                else:
-                    trader = BearCallSpreadTrader(
-                        ib,
-                        walk_step=args.walk_step,
-                        walk_interval=args.walk_interval,
-                        min_credit=args.min_credit,
-                        quantity=args.quantity,
-                    )
-                    trade = trader.execute(
-                        ticker_symbol=self.ticker_symbol,
-                        sell_call_info=sell_leg,
-                        buy_call_info=buy_leg,
-                        trading_class=self.trading_class,
-                    )
+                        legs_section = (
+                            f"  Sell Put:  {self.ticker_symbol} {sell_put['strike']}P @ Δ{sell_put['theo_delta']:.4f}\n"
+                            f"  Buy Put:   {self.ticker_symbol} {buy_put['strike']}P @ Δ{buy_put['theo_delta']:.4f}\n"
+                            f"  Sell Call: {self.ticker_symbol} {sell_call['strike']}C @ Δ{sell_call['theo_delta']:.4f}\n"
+                            f"  Buy Call:  {self.ticker_symbol} {buy_call['strike']}C @ Δ{buy_call['theo_delta']:.4f}\n"
+                            f"  {credit_label}: ${credit_val:.2f}\n"
+                            f"  Qty: {args.quantity}\n"
+                        )
+                    else:
+                        option_type = "P" if strategy_to_execute == "bull" else "C"
+                        strategy_label = (
+                            "Bull Put Spread"
+                            if strategy_to_execute == "bull"
+                            else "Bear Call Spread"
+                        )
+                        target_delta = (
+                            args.bear_delta
+                            if strategy_to_execute == "bear"
+                            else args.bull_delta
+                        )
 
-                credit_label = "Market Credit" if args.ib_market else "Theo Credit"
-                credit_val = round(sell_leg["theo_price"] - buy_leg["theo_price"], 2)
+                        sell_leg, buy_leg = self._find_spread_legs(
+                            args,
+                            finder,
+                            iv_provider,
+                            ib,
+                            underlying_spot,
+                            risk_free_rate,
+                            option_type,
+                            target_delta,
+                        )
 
-                legs_section = (
-                    f"  Sell: {self.ticker_symbol} {sell_leg['strike']}{option_type} @ Δ{sell_leg['theo_delta']:.4f}\n"
-                    f"  Buy:  {self.ticker_symbol} {buy_leg['strike']}{option_type} @ Δ{buy_leg['theo_delta']:.4f}\n"
-                    f"  {credit_label}: ${credit_val:.2f}\n"
-                    f"  Qty: {args.quantity}\n"
-                )
+                        if strategy_to_execute == "bull":
+                            trader = BullPutSpreadTrader(
+                                ib,
+                                walk_step=args.walk_step,
+                                walk_interval=args.walk_interval,
+                                min_credit=args.min_credit,
+                                quantity=args.quantity,
+                            )
+                            trade = trader.execute(
+                                ticker_symbol=self.ticker_symbol,
+                                sell_put_info=sell_leg,
+                                buy_put_info=buy_leg,
+                                trading_class=self.trading_class,
+                            )
+                        else:
+                            trader = BearCallSpreadTrader(
+                                ib,
+                                walk_step=args.walk_step,
+                                walk_interval=args.walk_interval,
+                                min_credit=args.min_credit,
+                                quantity=args.quantity,
+                            )
+                            trade = trader.execute(
+                                ticker_symbol=self.ticker_symbol,
+                                sell_call_info=sell_leg,
+                                buy_call_info=buy_leg,
+                                trading_class=self.trading_class,
+                            )
 
-            if trade is not None:
-                fill_price = abs(trade.orderStatus.avgFillPrice)
-                msg = (
-                    self._build_header(now_est)
-                    + self._build_market_section(today_close, today_ema20, regime)
-                    + f"\n✅ <b>{strategy_label} — FILLED</b>\n"
-                    + f"<pre>{legs_section}"
-                    + f"  Fill: ${fill_price:.2f}</pre>"
-                )
-            else:
-                msg = (
-                    self._build_header(now_est)
-                    + self._build_market_section(today_close, today_ema20, regime)
-                    + f"\n⛔ <b>{strategy_label} — NOT FILLED</b>\n"
-                    + f"<pre>{legs_section}</pre>"
-                    + "\nWalk-the-book aborted (credit dropped below minimum threshold)."
-                )
-            notifier.send_message(msg)
+                        credit_label = (
+                            "Market Credit" if args.ib_market else "Theo Credit"
+                        )
+                        credit_val = round(
+                            sell_leg["theo_price"] - buy_leg["theo_price"], 2
+                        )
+
+                        legs_section = (
+                            f"  Sell: {self.ticker_symbol} {sell_leg['strike']}{option_type} @ Δ{sell_leg['theo_delta']:.4f}\n"
+                            f"  Buy:  {self.ticker_symbol} {buy_leg['strike']}{option_type} @ Δ{buy_leg['theo_delta']:.4f}\n"
+                            f"  {credit_label}: ${credit_val:.2f}\n"
+                            f"  Qty: {args.quantity}\n"
+                        )
+
+                    if trade is not None:
+                        fill_price = abs(trade.orderStatus.avgFillPrice)
+                        msg = (
+                            self._build_header(now_est)
+                            + self._build_market_section(
+                                today_close, today_ema20, regime
+                            )
+                            + f"\n✅ <b>{strategy_label} — FILLED</b>\n"
+                            + f"<pre>{legs_section}"
+                            + f"  Fill: ${fill_price:.2f}</pre>"
+                        )
+                    else:
+                        msg = (
+                            self._build_header(now_est)
+                            + self._build_market_section(
+                                today_close, today_ema20, regime
+                            )
+                            + f"\n⛔ <b>{strategy_label} — NOT FILLED</b>\n"
+                            + f"<pre>{legs_section}</pre>"
+                            + "\nWalk-the-book aborted (credit dropped below minimum threshold)."
+                        )
+                    notifier.send_message(msg)
+
+                    break  # Success, exit the fallback loop
+                except Exception as e:
+                    if (
+                        "Greeks population too low" in str(e)
+                        and attempt_idx < len(finders_to_try) - 1
+                    ):
+                        print(f"\n[⚠️] IBKR Greeks fetching failed ({e}).")
+                        print(
+                            "[*] Falling back to theoretical Greeks (TheoryOptionFinder)...\n"
+                        )
+                        continue
+                    raise
+
+            args.ib_market = original_ib_market
 
         except Exception as e:
             tb = traceback.format_exc()
