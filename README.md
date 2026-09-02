@@ -179,6 +179,7 @@ Available arguments (all default to the original strategy constants):
 - `--min-credit`: Minimum acceptable net credit (default: 0.09)
 - `--quantity`: Number of spread contracts to trade (default: 1)
 - `--add-bear`: Enable Bear Call Credit Spreads (disabled by default)
+- `--spread-step`: Number of strike steps between short and long legs (default: 1). For example, `--spread-step 2` creates a 10-wide spread for SPX or a 2-wide spread for XSP.
 - `--ib-market`: Use IBKR live option chain model Greeks instead of Black-Scholes theory.
 
 ### Fully Automated Setup (macOS & Linux)

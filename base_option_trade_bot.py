@@ -182,6 +182,12 @@ class BaseOptionTradeBot:
             action="store_true",
             help="Enable Bear Call Credit Spreads (disabled by default)",
         )
+        parser.add_argument(
+            "--spread-step",
+            type=int,
+            default=1,
+            help="Number of strike steps between short and long legs (default: 1, e.g. 2 = 10-wide for SPX)",
+        )
         args = parser.parse_args()
 
         # Enforce default_walk_step increments
@@ -585,7 +591,7 @@ class BaseOptionTradeBot:
         if args.ib_market:
             sell_leg_info["theo_price"] = sell_leg_info["market_price"]
 
-        strike_offset = self.strike_offset
+        strike_offset = self.strike_offset * args.spread_step
         buy_strike = sell_leg_info["strike"] + (
             -strike_offset if option_type == "P" else strike_offset
         )
