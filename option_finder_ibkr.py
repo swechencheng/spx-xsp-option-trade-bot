@@ -112,52 +112,75 @@ class OptionFinder:
         self.ib.qualifyContracts(*contracts)
         valid_contracts = [c for c in contracts if c.conId != 0]
 
-        self.ib.reqMarketDataType(
-            4
-        )  # Fallback to delayed-frozen if market is closed or not subscribed
-        tickers = self.ib.reqTickers(*valid_contracts)
+        max_greeks_attempts = 6
+        min_population_rate = 0.95
 
-        print(f"Waiting for option Greeks to populate ({len(tickers)} contracts)...")
-        timeout = 30.0
-        elapsed = 0.0
-        while elapsed < timeout:
-            populated = sum(
+        for greeks_attempt in range(1, max_greeks_attempts + 1):
+            self.ib.reqMarketDataType(
+                4
+            )  # Fallback to delayed-frozen if market is closed or not subscribed
+            tickers = self.ib.reqTickers(*valid_contracts)
+
+            print(
+                f"Waiting for option Greeks to populate ({len(tickers)} contracts)... "
+                f"[attempt {greeks_attempt}/{max_greeks_attempts}]"
+            )
+            timeout = 30.0
+            elapsed = 0.0
+            while elapsed < timeout:
+                populated = sum(
+                    1
+                    for t in tickers
+                    if t.modelGreeks
+                    and t.modelGreeks.delta is not None
+                    and not math.isnan(t.modelGreeks.delta)
+                )
+                if populated >= len(tickers):
+                    break
+                self.ib.sleep(0.1)
+                elapsed += 0.1
+
+            # Log population stats for diagnostics
+            populated_count = sum(
                 1
                 for t in tickers
                 if t.modelGreeks
                 and t.modelGreeks.delta is not None
                 and not math.isnan(t.modelGreeks.delta)
             )
-            if populated >= len(tickers):
-                break
-            self.ib.sleep(0.1)
-            elapsed += 0.1
+            unpopulated = [
+                t.contract.strike
+                for t in tickers
+                if not t.modelGreeks
+                or t.modelGreeks.delta is None
+                or math.isnan(t.modelGreeks.delta)
+            ]
+            print(f"  Greeks populated: {populated_count}/{len(tickers)}")
+            if unpopulated:
+                print(f"  ⚠️  Missing Greeks for strikes: {unpopulated}")
 
-        # Log population stats for diagnostics
-        populated_count = sum(
-            1
-            for t in tickers
-            if t.modelGreeks
-            and t.modelGreeks.delta is not None
-            and not math.isnan(t.modelGreeks.delta)
-        )
-        unpopulated = [
-            t.contract.strike
-            for t in tickers
-            if not t.modelGreeks
-            or t.modelGreeks.delta is None
-            or math.isnan(t.modelGreeks.delta)
-        ]
-        print(f"  Greeks populated: {populated_count}/{len(tickers)}")
-        if unpopulated:
-            print(f"  ⚠️  Missing Greeks for strikes: {unpopulated}")
+            # Check if population rate is sufficient
+            if (
+                len(tickers) > 0
+                and populated_count / len(tickers) >= min_population_rate
+            ):
+                break  # Success — proceed to strike selection
 
-        # Abort if too many contracts failed to populate — the strike
-        # selection would be unreliable and could pick a dangerous delta.
-        min_population_rate = 0.95
-        if len(tickers) > 0 and populated_count / len(tickers) < min_population_rate:
+            # Population too low — cancel and retry
+            print(
+                f"  ⚠️  Greeks population too low "
+                f"({populated_count}/{len(tickers)} = "
+                f"{populated_count / len(tickers) * 100:.0f}% < {min_population_rate * 100:.0f}%). "
+                f"Cancelling and retrying..."
+            )
+            for c in valid_contracts:
+                self.ib.cancelMktData(c)
+            self.ib.sleep(2)
+        else:
+            # All attempts exhausted
             raise Exception(
-                f"Greeks population too low: {populated_count}/{len(tickers)} "
+                f"Greeks population too low after {max_greeks_attempts} attempts: "
+                f"{populated_count}/{len(tickers)} "
                 f"({populated_count / len(tickers) * 100:.0f}% < {min_population_rate * 100:.0f}% minimum). "
                 f"Aborting to avoid unreliable strike selection. "
                 f"Check your IBKR market data subscriptions."
