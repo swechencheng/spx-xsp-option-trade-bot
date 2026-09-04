@@ -375,7 +375,8 @@ class BaseOptionTradeBot:
             finders_to_try = []
             if args.ib_market:
                 finders_to_try.append((True, IbkrOptionFinder(ib)))
-            finders_to_try.append((False, TheoryOptionFinder(ib)))
+            else:
+                finders_to_try.append((False, TheoryOptionFinder(ib)))
 
             original_ib_market = args.ib_market
 
@@ -533,15 +534,6 @@ class BaseOptionTradeBot:
 
                     break  # Success, exit the fallback loop
                 except Exception as e:
-                    if (
-                        "Greeks population too low" in str(e)
-                        and attempt_idx < len(finders_to_try) - 1
-                    ):
-                        print(f"\n[⚠️] IBKR Greeks fetching failed ({e}).")
-                        print(
-                            "[*] Falling back to theoretical Greeks (TheoryOptionFinder)...\n"
-                        )
-                        continue
                     raise
 
             args.ib_market = original_ib_market
