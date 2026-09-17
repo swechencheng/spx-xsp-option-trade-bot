@@ -84,107 +84,168 @@ class OptionFinder:
         T = calculate_trading_time_t(selected_expiry)
         print(f"Locked expiration: {selected_expiry} (T={T:.4f} trading years)")
 
-        if underlying_spot and not math.isnan(underlying_spot) and underlying_spot > 0:
-            filtered_strikes = [
-                s
-                for s in target_chain.strikes
-                if underlying_spot - 120 <= s <= underlying_spot + 120
-            ]
+        # Determine anchor offset based on underlying ticker
+        if ticker_symbol.upper() == "SPX":
+            anchor_offset = 50.0
+        elif ticker_symbol.upper() == "XSP":
+            anchor_offset = 5.0
         else:
-            mid_idx = len(target_chain.strikes) // 2
-            filtered_strikes = target_chain.strikes[
-                max(0, mid_idx - 50) : min(len(target_chain.strikes), mid_idx + 50)
-            ]
-
-        contracts = []
-        for s in filtered_strikes:
-            contracts.append(
-                Option(
-                    ticker_symbol,
-                    selected_expiry,
-                    s,
-                    option_type,
-                    "SMART",
-                    tradingClass=trading_class,
-                )
+            anchor_offset = (
+                50.0 if (underlying_spot and underlying_spot > 1000) else 5.0
             )
 
-        self.ib.qualifyContracts(*contracts)
-        valid_contracts = [c for c in contracts if c.conId != 0]
+        spot = underlying_spot
+        if not spot or math.isnan(spot) or spot <= 0:
+            sorted_all = sorted(target_chain.strikes)
+            spot = sorted_all[len(sorted_all) // 2]
 
-        max_greeks_attempts = 6
-        min_population_rate = 0.95
+        is_put = option_type.upper() == "P"
+        if is_put:
+            start_strike = spot - anchor_offset
+            # Downward list: strikes <= start_strike, sorted descending (closest to start_strike first)
+            candidate_down = sorted(
+                [s for s in target_chain.strikes if s <= start_strike],
+                reverse=True,
+            )
+            # Upward list: strikes > start_strike, sorted ascending (closest to start_strike first)
+            candidate_up = sorted([s for s in target_chain.strikes if s > start_strike])
+            current_direction = "down"
+        else:
+            start_strike = spot + anchor_offset
+            # Upward list: strikes >= start_strike, sorted ascending (closest to start_strike first)
+            candidate_up = sorted(
+                [s for s in target_chain.strikes if s >= start_strike]
+            )
+            # Downward list: strikes < start_strike, sorted descending (closest to start_strike first)
+            candidate_down = sorted(
+                [s for s in target_chain.strikes if s < start_strike],
+                reverse=True,
+            )
+            current_direction = "up"
 
-        for greeks_attempt in range(1, max_greeks_attempts + 1):
-            self.ib.reqMarketDataType(
-                4
-            )  # Fallback to delayed-frozen if market is closed or not subscribed
-            tickers = self.ib.reqTickers(*valid_contracts)
+        print(
+            f"Anchor strike: {start_strike:.2f} (Spot: {spot:.2f}, Offset: ±{anchor_offset:.1f}) | "
+            f"Initial search direction: {current_direction.upper()}"
+        )
+
+        page_size = 25
+        cursor_down = 0
+        cursor_up = 0
+
+        def get_next_batch(direction: str, count: int = page_size):
+            nonlocal cursor_down, cursor_up
+            valid_batch = []
+            if direction == "down":
+                while len(valid_batch) < count and cursor_down < len(candidate_down):
+                    chunk_size = count - len(valid_batch)
+                    chunk_strikes = candidate_down[
+                        cursor_down : cursor_down + chunk_size
+                    ]
+                    cursor_down += len(chunk_strikes)
+                    chunk_contracts = [
+                        Option(
+                            ticker_symbol,
+                            selected_expiry,
+                            s,
+                            option_type,
+                            "SMART",
+                            tradingClass=trading_class,
+                        )
+                        for s in chunk_strikes
+                    ]
+                    self.ib.qualifyContracts(*chunk_contracts)
+                    valid_batch.extend([c for c in chunk_contracts if c.conId != 0])
+            else:
+                while len(valid_batch) < count and cursor_up < len(candidate_up):
+                    chunk_size = count - len(valid_batch)
+                    chunk_strikes = candidate_up[cursor_up : cursor_up + chunk_size]
+                    cursor_up += len(chunk_strikes)
+                    chunk_contracts = [
+                        Option(
+                            ticker_symbol,
+                            selected_expiry,
+                            s,
+                            option_type,
+                            "SMART",
+                            tradingClass=trading_class,
+                        )
+                        for s in chunk_strikes
+                    ]
+                    self.ib.qualifyContracts(*chunk_contracts)
+                    valid_batch.extend([c for c in chunk_contracts if c.conId != 0])
+            return valid_batch
+
+        evaluated_tickers = {}
+        max_pages = 10
+        page_num = 0
+
+        while page_num < max_pages:
+            page_num += 1
+            batch = get_next_batch(current_direction, page_size)
+            if not batch:
+                print(
+                    f"No more strikes available in {current_direction.upper()} direction."
+                )
+                break
 
             print(
-                f"Waiting for option Greeks to populate ({len(tickers)} contracts)... "
-                f"[attempt {greeks_attempt}/{max_greeks_attempts}]"
+                f"\n[Page {page_num}] Fetching {len(batch)} contracts in {current_direction.upper()} direction "
+                f"(strikes: {min(c.strike for c in batch):.1f} - {max(c.strike for c in batch):.1f})..."
             )
-            timeout = 30.0
-            elapsed = 0.0
-            while elapsed < timeout:
-                populated = sum(
-                    1
-                    for t in tickers
-                    if t.modelGreeks
-                    and t.modelGreeks.delta is not None
-                    and not math.isnan(t.modelGreeks.delta)
-                )
-                if populated >= len(tickers):
-                    break
-                self.ib.sleep(0.1)
-                elapsed += 0.1
+            page_tickers = self._fetch_page_greeks(batch)
+            evaluated_tickers.update(page_tickers)
 
-            # Log population stats for diagnostics
-            populated_count = sum(
-                1
-                for t in tickers
+            all_deltas = {
+                s: abs(t.modelGreeks.delta)
+                for s, t in evaluated_tickers.items()
                 if t.modelGreeks
                 and t.modelGreeks.delta is not None
                 and not math.isnan(t.modelGreeks.delta)
-            )
-            unpopulated = [
-                t.contract.strike
-                for t in tickers
-                if not t.modelGreeks
-                or t.modelGreeks.delta is None
-                or math.isnan(t.modelGreeks.delta)
-            ]
-            print(f"  Greeks populated: {populated_count}/{len(tickers)}")
-            if unpopulated:
-                print(f"  ⚠️  Missing Greeks for strikes: {unpopulated}")
+            }
 
-            # Check if population rate is sufficient
-            if (
-                len(tickers) > 0
-                and populated_count / len(tickers) >= min_population_rate
-            ):
-                break  # Success — proceed to strike selection
+            if not all_deltas:
+                raise Exception("No valid Greeks returned for fetched batch.")
 
-            # Population too low — cancel and retry
+            min_d = min(all_deltas.values())
+            max_d = max(all_deltas.values())
+
             print(
-                f"  ⚠️  Greeks population too low "
-                f"({populated_count}/{len(tickers)} = "
-                f"{populated_count / len(tickers) * 100:.0f}% < {min_population_rate * 100:.0f}%). "
-                f"Cancelling and retrying..."
+                f"  Evaluated delta range so far: [{min_d:.4f}, {max_d:.4f}] "
+                f"(Target: {target_delta_abs:.4f})"
             )
-            for c in valid_contracts:
-                self.ib.cancelMktData(c)
-            self.ib.sleep(2)
-        else:
-            # All attempts exhausted
-            raise Exception(
-                f"Greeks population too low after {max_greeks_attempts} attempts: "
-                f"{populated_count}/{len(tickers)} "
-                f"({populated_count / len(tickers) * 100:.0f}% < {min_population_rate * 100:.0f}% minimum). "
-                f"Aborting to avoid unreliable strike selection. "
-                f"Check your IBKR market data subscriptions."
-            )
+
+            # Check if target delta is within range
+            if min_d <= target_delta_abs <= max_d:
+                print(
+                    f"  🎯 Target delta {target_delta_abs:.4f} is within range [{min_d:.4f}, {max_d:.4f}]!"
+                )
+                break
+
+            # Decide next direction
+            if target_delta_abs < min_d:
+                # Target delta is smaller than all evaluated contracts (need further OTM)
+                next_direction = "down" if is_put else "up"
+                print(
+                    f"  Target delta {target_delta_abs:.4f} < min evaluated {min_d:.4f}. "
+                    f"Fetching next {page_size} contracts {next_direction.upper()}..."
+                )
+            else:
+                # Target delta is larger than all evaluated contracts (need closer to ATM)
+                next_direction = "up" if is_put else "down"
+                print(
+                    f"  Target delta {target_delta_abs:.4f} > max evaluated {max_d:.4f}. "
+                    f"Fetching next {page_size} contracts {next_direction.upper()}..."
+                )
+
+            # Check if we can continue in next_direction
+            if next_direction == "down" and cursor_down >= len(candidate_down):
+                print("  No more downward strikes available. Stopping search.")
+                break
+            elif next_direction == "up" and cursor_up >= len(candidate_up):
+                print("  No more upward strikes available. Stopping search.")
+                break
+
+            current_direction = next_direction
 
         target_signed_delta = (
             target_delta_abs if option_type.upper() == "C" else -target_delta_abs
@@ -194,7 +255,7 @@ class OptionFinder:
         min_delta_error = float("inf")
         best_ticker = None
 
-        for t in tickers:
+        for strike, t in evaluated_tickers.items():
             if not t.modelGreeks or t.modelGreeks.delta is None:
                 continue
             delta = t.modelGreeks.delta
@@ -205,7 +266,7 @@ class OptionFinder:
 
             if error < min_delta_error:
                 min_delta_error = error
-                best_strike = t.contract.strike
+                best_strike = strike
                 best_ticker = t
 
         if not best_ticker:
@@ -261,6 +322,75 @@ class OptionFinder:
             "theo_iv": theo_iv,
             "option_type": option_type,
         }
+
+    def _fetch_page_greeks(self, valid_contracts: list) -> dict:
+        max_greeks_attempts = 6
+        min_population_rate = 1.0
+        tickers = []
+
+        for greeks_attempt in range(1, max_greeks_attempts + 1):
+            self.ib.reqMarketDataType(4)
+            tickers = self.ib.reqTickers(*valid_contracts)
+
+            print(
+                f"Waiting for option Greeks to populate ({len(tickers)} contracts)... "
+                f"[attempt {greeks_attempt}/{max_greeks_attempts}]"
+            )
+            timeout = 30.0
+            elapsed = 0.0
+            while elapsed < timeout:
+                populated = sum(
+                    1
+                    for t in tickers
+                    if t.modelGreeks
+                    and t.modelGreeks.delta is not None
+                    and not math.isnan(t.modelGreeks.delta)
+                )
+                if populated >= len(tickers):
+                    break
+                self.ib.sleep(0.1)
+                elapsed += 0.1
+
+            populated_count = sum(
+                1
+                for t in tickers
+                if t.modelGreeks
+                and t.modelGreeks.delta is not None
+                and not math.isnan(t.modelGreeks.delta)
+            )
+            unpopulated = [
+                t.contract.strike
+                for t in tickers
+                if not t.modelGreeks
+                or t.modelGreeks.delta is None
+                or math.isnan(t.modelGreeks.delta)
+            ]
+            print(f"  Greeks populated: {populated_count}/{len(tickers)}")
+            if unpopulated:
+                print(f"  ⚠️  Missing Greeks for strikes: {unpopulated}")
+
+            if len(tickers) > 0 and populated_count == len(tickers):
+                for c in valid_contracts:
+                    self.ib.cancelMktData(c)
+                break
+
+            print(
+                f"  ⚠️  Greeks population incomplete "
+                f"({populated_count}/{len(tickers)} < 100%). "
+                f"Cancelling and retrying..."
+            )
+            for c in valid_contracts:
+                self.ib.cancelMktData(c)
+            self.ib.sleep(2)
+        else:
+            raise Exception(
+                f"Greeks population failed to reach 100% after {max_greeks_attempts} attempts: "
+                f"{populated_count}/{len(tickers)} populated. "
+                f"Aborting to avoid unreliable strike selection. "
+                f"Check your IBKR market data subscriptions."
+            )
+
+        return {t.contract.strike: t for t in tickers}
 
     def fetch_market_price(
         self,
@@ -344,6 +474,8 @@ class OptionFinder:
         print(
             f"  Snapshot Market Price: {market_price:.2f} (Bid: {bid:.2f}, Ask: {ask:.2f})"
         )
+
+        self.ib.cancelMktData(opt_contract)
 
         return {
             "market_price": market_price,
