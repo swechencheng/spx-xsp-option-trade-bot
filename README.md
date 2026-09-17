@@ -180,6 +180,8 @@ Available arguments (all default to the original strategy constants):
 - `--quantity`: Number of spread contracts to trade (default: 1)
 - `--add-bear`: Enable Bear Call Credit Spreads (disabled by default)
 - `--spread-step`: Number of strike steps between short and long legs (default: 1). For example, `--spread-step 2` creates a 10-wide spread for SPX or a 2-wide spread for XSP.
+- `--iron-condor`: If set, executes an Iron Condor in bullish regimes (mutually exclusive with `--always-put-spread`).
+- `--always-put-spread`: Always execute a Put Credit Spread regardless of regime (bullish or bearish; mutually exclusive with `--iron-condor`).
 - `--ib-market`: Use IBKR live option chain model Greeks instead of Black-Scholes theory.
 
 ### Fully Automated Setup (macOS & Linux)

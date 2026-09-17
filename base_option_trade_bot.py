@@ -154,11 +154,18 @@ class BaseOptionTradeBot:
             default=5,
             help="Seconds to wait between fill checks (default: 5)",
         )
-        parser.add_argument(
+        strategy_group = parser.add_mutually_exclusive_group()
+        strategy_group.add_argument(
             "--iron-condor",
             action="store_true",
-            default=self.use_iron_condor,
+            default=None,
             help="If set, executes an Iron Condor in bullish regimes (default depends on subclass)",
+        )
+        strategy_group.add_argument(
+            "--always-put-spread",
+            action="store_true",
+            default=False,
+            help="If set, always executes a Put Spread regardless of regime (bullish or bearish)",
         )
         parser.add_argument(
             "--min-credit",
@@ -189,6 +196,11 @@ class BaseOptionTradeBot:
             help="Number of strike steps between short and long legs (default: 1, e.g. 2 = 10-wide for SPX)",
         )
         args = parser.parse_args()
+
+        if args.always_put_spread:
+            args.iron_condor = False
+        elif args.iron_condor is None:
+            args.iron_condor = self.use_iron_condor
 
         # Enforce default_walk_step increments
         steps = round(args.walk_step / self.default_walk_step)
@@ -321,12 +333,21 @@ class BaseOptionTradeBot:
         if today_close > today_ema20:
             regime = "Bullish"
             print("[*] Bullish Regime detected.")
-            strategy_to_execute = "iron_condor" if args.iron_condor else "bull"
-
         elif today_close < today_ema20:
             regime = "Bearish"
             print("[*] Bearish Regime detected.")
+        else:
+            regime = "Neutral"
+            print("[-] Neutral Regime detected (Close equals EMA20).")
 
+        if args.always_put_spread:
+            print(
+                "[*] --always-put-spread enabled: executing Put Spread regardless of regime."
+            )
+            strategy_to_execute = "bull"
+        elif regime == "Bullish":
+            strategy_to_execute = "iron_condor" if args.iron_condor else "bull"
+        elif regime == "Bearish":
             if not args.add_bear:
                 abort_reason = "Bear Call Spread disabled (use --add-bear to enable)"
                 print(f"[!] {abort_reason}. Trade aborted.")
@@ -336,7 +357,6 @@ class BaseOptionTradeBot:
             else:
                 strategy_to_execute = "bear"
         else:
-            regime = "Neutral"
             abort_reason = "Close equals EMA20 exactly — no trade signal"
             print("[-] Close equals EMA20 exactly. No trade executed.")
 
