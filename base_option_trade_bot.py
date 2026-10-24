@@ -86,6 +86,10 @@ class BaseOptionTradeBot:
         raise NotImplementedError()
 
     @property
+    def default_max_strike_price_away(self) -> float:
+        raise NotImplementedError()
+
+    @property
     def use_iron_condor(self) -> bool:
         """If True, execute an iron condor when the regime is bullish."""
         return False
@@ -194,6 +198,12 @@ class BaseOptionTradeBot:
             type=int,
             default=1,
             help="Number of strike steps between short and long legs (default: 1, e.g. 2 = 10-wide for SPX)",
+        )
+        parser.add_argument(
+            "--max-strike-price-away",
+            type=float,
+            default=self.default_max_strike_price_away,
+            help=f"Maximum distance the short strike can be away from spot price (default: {self.default_max_strike_price_away})",
         )
         args = parser.parse_args()
 
@@ -598,6 +608,7 @@ class BaseOptionTradeBot:
             option_type=option_type,
             target_delta_abs=target_delta,
             dte_target=args.dte_target,
+            max_strike_price_away=args.max_strike_price_away,
         )
 
         if args.ib_market:

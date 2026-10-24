@@ -182,6 +182,7 @@ Available arguments (all default to the original strategy constants):
 - `--spread-step`: Number of strike steps between short and long legs (default: 1). For example, `--spread-step 2` creates a 10-wide spread for SPX or a 2-wide spread for XSP.
 - `--iron-condor`: If set, executes an Iron Condor in bullish regimes (mutually exclusive with `--always-put-spread`).
 - `--always-put-spread`: Always execute a Put Credit Spread regardless of regime (bullish or bearish; mutually exclusive with `--iron-condor`).
+- `--max-strike-price-away`: Maximum distance the short leg strike can be away from the spot price (default: 120 for SPX, 12 for XSP). If target delta strike is further away, caps short strike to the nearest valid strike at `spot ± max-strike-price-away`. Set to `0` to disable.
 - `--ib-market`: Use IBKR live option chain model Greeks instead of Black-Scholes theory.
 
 ### Fully Automated Setup (macOS & Linux)

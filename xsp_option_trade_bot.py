@@ -23,6 +23,11 @@ class XspOptionTradeBot(BaseOptionTradeBot):
     def strike_offset(self) -> int:
         return 1
 
+    @property
+    def default_max_strike_price_away(self) -> float:
+        # XSP short strike distance cap from spot price
+        return 12.0
+
 
 if __name__ == "__main__":
     bot = XspOptionTradeBot()
