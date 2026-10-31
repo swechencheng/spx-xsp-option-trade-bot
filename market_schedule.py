@@ -104,6 +104,42 @@ def get_minutes_until_close(now_dt: Optional[datetime.datetime] = None) -> float
     return diff
 
 
+def get_monitoring_window(d: datetime.date) -> Tuple[datetime.time, datetime.time]:
+    """Return (start_time, close_time) for intraday delta monitoring (10:30 ET to close)."""
+    start_time = datetime.time(10, 30)
+    close_time = get_market_close_time(d)
+    return start_time, close_time
+
+
+def is_monitoring_window(now_dt: Optional[datetime.datetime] = None) -> Tuple[bool, str]:
+    """Check whether now_dt is inside the 0DTE delta monitoring window (10:30 ET to close).
+
+    Returns:
+        (is_in_window, reason_description)
+    """
+    now = now_dt or datetime.datetime.now(EASTERN_TZ)
+    if now.tzinfo is None:
+        now = EASTERN_TZ.localize(now)
+    else:
+        now = now.astimezone(EASTERN_TZ)
+
+    if now.weekday() >= 5:
+        return False, f"Weekend ({now.strftime('%A')}) - Market closed"
+
+    start_time, close_time = get_monitoring_window(now.date())
+    now_time = now.time()
+
+    if now_time < datetime.time(9, 30):
+        return False, f"Pre-market ({now_time.strftime('%H:%M')} ET < 09:30 ET)"
+    if now_time < start_time:
+        return False, f"First 60 minutes settling period ({now_time.strftime('%H:%M')} ET < 10:30 ET)"
+    if now_time >= close_time:
+        return False, f"Post-close ({now_time.strftime('%H:%M')} ET >= {close_time.strftime('%H:%M')} ET)"
+
+    return True, f"In monitoring window ({start_time.strftime('%H:%M')} - {close_time.strftime('%H:%M')} ET)"
+
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Market Schedule Checker")
     parser.add_argument(

@@ -867,6 +867,79 @@ class BaseOptionTradeBot:
                 else:
                     premium_lines = f"  Total Premium Collected: ${total_credit_received:.2f} (Gross)"
 
+                # Persist trade record for 0DTE delta monitor on the next trading day
+                try:
+                    from position_manager import ActiveTradeRecord, OptionLegRecord, PositionManager
+                    pm = PositionManager()
+                    if args.iron_condor:
+                        rec = ActiveTradeRecord(
+                            symbol=self.ticker_symbol,
+                            trading_class=self.trading_class,
+                            strategy="iron_condor",
+                            opened_at=now_est.isoformat(),
+                            expiry=sell_put["expiry"],
+                            quantity=args.quantity,
+                            fill_price=fill_price,
+                            status="OPEN",
+                            short_leg=OptionLegRecord(
+                                strike=sell_put["strike"],
+                                option_type="P",
+                                expiry=sell_put["expiry"],
+                                action="SELL",
+                                initial_delta=sell_put.get("theo_delta"),
+                                initial_price=sell_put.get("theo_price"),
+                                trading_class=self.trading_class,
+                            ),
+                            long_leg=OptionLegRecord(
+                                strike=buy_put["strike"],
+                                option_type="P",
+                                expiry=buy_put["expiry"],
+                                action="BUY",
+                                initial_delta=buy_put.get("theo_delta"),
+                                initial_price=buy_put.get("theo_price"),
+                                trading_class=self.trading_class,
+                            ),
+                            iron_condor_legs={
+                                "sell_put": sell_put,
+                                "buy_put": buy_put,
+                                "sell_call": sell_call,
+                                "buy_call": buy_call,
+                            },
+                        )
+                    else:
+                        rec = ActiveTradeRecord(
+                            symbol=self.ticker_symbol,
+                            trading_class=self.trading_class,
+                            strategy=strategy_to_execute,
+                            opened_at=now_est.isoformat(),
+                            expiry=sell_leg["expiry"],
+                            quantity=args.quantity,
+                            fill_price=fill_price,
+                            status="OPEN",
+                            short_leg=OptionLegRecord(
+                                strike=sell_leg["strike"],
+                                option_type=sell_leg["option_type"],
+                                expiry=sell_leg["expiry"],
+                                action="SELL",
+                                initial_delta=sell_leg.get("theo_delta"),
+                                initial_price=sell_leg.get("theo_price"),
+                                trading_class=self.trading_class,
+                            ),
+                            long_leg=OptionLegRecord(
+                                strike=buy_leg["strike"],
+                                option_type=buy_leg["option_type"],
+                                expiry=buy_leg["expiry"],
+                                action="BUY",
+                                initial_delta=buy_leg.get("theo_delta"),
+                                initial_price=buy_leg.get("theo_price"),
+                                trading_class=self.trading_class,
+                            ),
+                        )
+                    pm.save_active_trade(rec)
+                    print(f"{get_ny_timestamp()} 💾 Active trade record persisted to data/active_position.json for 0DTE delta monitoring.")
+                except Exception as pm_err:
+                    print(f"{get_ny_timestamp()} ⚠️ Failed to persist active trade record: {pm_err}")
+
                 msg = (
                     self._build_header(now_est)
                     + self._build_market_section(

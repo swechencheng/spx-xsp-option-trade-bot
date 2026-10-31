@@ -151,3 +151,76 @@ Run `bot_launcher.sh` every minute via `crontab -e`:
 ```
 
 `bot_launcher.sh` queries `market_schedule.py --check-trigger` every minute in `America/New_York` time. It automatically wakes up at **15:52 ET** on regular days (or **12:52 ET** on early close days), runs the strategy, and exits silently on off-hours or weekends.
+
+---
+
+## 0DTE Delta Monitor Daemon (Gamma Crash Protection)
+
+To avoid catastrophic gamma blowouts and downward strike breaches on the day of expiration (0DTE), the system includes a dedicated intraday monitor: [`delta_monitor_daemon.py`](delta_monitor_daemon.py).
+
+### How It Works
+
+1. **Active Position Tracking**: Whenever a trade executes successfully, [`base_option_trade_bot.py`](base_option_trade_bot.py) automatically records the open legs to `data/active_position.json` via [`position_manager.py`](position_manager.py).
+2. **Monitoring Window**:
+   - Commences **60 minutes after market open** (**10:30 ET**) to avoid opening-bell volatility.
+   - Runs until market close (**16:00 ET**, or **13:00 ET** on early close days).
+   - Scans every 5 minutes (configurable via `--interval`).
+3. **Breach Condition**:
+   - Inspects the short leg's live delta via the Real Gateway (market data subscription).
+   - If $|\Delta| > 0.65$, confirms downside breach risk.
+4. **Emergency Close Execution**:
+   - Constructs a reverse BAG combo contract (BUY short leg, SELL long leg).
+   - Immediately starts walking UP from current **Mid Price** (`current_limit = mid_price`, stepping up by `--walk-step 0.05` every `--walk-interval 5s`).
+   - If closing remains unfilled after **15 minutes**, automatically transitions to **Market Order** to guarantee execution and eliminate gamma risk.
+   - Continuously retries upon any unexpected network or IBKR errors.
+5. **Telegram Notifications**:
+   - Sends an immediate alert upon breach detection.
+   - Sends periodic progress reports every 15 minutes during the closing process.
+   - Sends a final fill summary with execution price, fees, and elapsed time, and marks the trade record as `CLOSED`.
+
+### Launching the Daemon
+
+```bash
+# Continuous daemon execution (Paper trading execution, Real market data):
+./run_delta_monitor.sh
+
+# Or directly via Python:
+venv/bin/python delta_monitor_daemon.py
+
+# Live funded account execution:
+venv/bin/python delta_monitor_daemon.py --real
+
+# Single-shot scan (useful for debugging):
+venv/bin/python delta_monitor_daemon.py --check-once
+```
+
+### Systemd Service Configuration (Linux)
+
+Create `/etc/systemd/system/xsp-delta-monitor.service`:
+
+```ini
+[Unit]
+Description=0DTE SPX/XSP Option Delta Monitor Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/xsp_opt_strat
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/home/ubuntu/xsp_opt_strat/venv/bin/python -u delta_monitor_daemon.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start with:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now xsp-delta-monitor.service
+sudo journalctl -u xsp-delta-monitor.service -f
+```
+
