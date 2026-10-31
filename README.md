@@ -126,15 +126,20 @@ venv/bin/python xsp_option_trade_bot.py --ib-market
 Available CLI arguments:
 - `--config`: Path to custom `config.json` (default: `config.json` in project root).
 - `--real`: Execute orders on the real account (default: paper account).
+- `--quantity`: Number of spread contracts to trade (default: 1).
+- `--min-credit`: Minimum acceptable net credit (default: 0.09, floor: 0.09).
 - `--ib-market`: Use real-time live IBKR option chain Greeks and prices from the real gateway.
 - `--iron-condor`: Execute an Iron Condor in bullish regimes (mutually exclusive with `--always-put-spread`).
 - `--always-put-spread`: Always execute a Put Credit Spread regardless of regime (mutually exclusive with `--iron-condor`).
+- `--add-bear`: Enable Bear Call Credit Spreads in bearish regimes (disabled by default).
 - `--bull-delta`: Sell leg target delta for Put Spread (default: 0.05).
 - `--bear-delta`: Sell leg target delta for Call Spread (default: 0.05).
 - `--dte-target`: Target days-to-expiration (default: 1).
 - `--spread-step`: Strike step multiplier between short and long legs (default: 1; e.g. 2 = 10-wide for SPX).
+- `--walk-step`: Price reduction step per repricing round (default: 0.05).
+- `--walk-interval`: Time interval in seconds between walk steps (default: 5).
 - `--max-model-market-diff`: Maximum allowable divergence between model price and market price (default: 0.30, i.e. 30%).
-- `--ignore-events`: Bypass FOMC, CPI, NFP, and tech earnings blackout filters.
+- `--ignore-events`: Bypass FOMC, CPI, NFP, US Election, PMI, and tech earnings blackout filters.
 - `--ignore-time-check`: Bypass trading schedule timing check.
 
 ### Fully Automated Setup (`cron`)

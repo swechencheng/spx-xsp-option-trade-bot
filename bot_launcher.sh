@@ -35,9 +35,12 @@ if [ $? -eq 0 ]; then
     # 4. SPX Live Real Account Trading (Executes orders on live funded account):
     # venv/bin/python -u spx_option_trade_bot.py --ib-market --real
 
-    # 5. XSP (Mini-SPX) Paper Trading with Real Market Data:
+    # 5. SPX with Custom Quantity (e.g. trade 2 contracts):
+    # venv/bin/python -u spx_option_trade_bot.py --ib-market --quantity 2
+
+    # 6. XSP (Mini-SPX) Paper Trading with Real Market Data:
     # venv/bin/python -u xsp_option_trade_bot.py --ib-market
 
-    # 6. Manual Testing / Overrides (Bypass macro events and schedule window checks):
+    # 7. Manual Testing / Overrides (Bypass macro events and schedule window checks):
     # venv/bin/python -u spx_option_trade_bot.py --ib-market --ignore-events --ignore-time-check
 fi
