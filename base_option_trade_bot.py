@@ -128,15 +128,15 @@ class BaseOptionTradeBot:
     def evaluate_spread_consistency(
         theo_credit: float,
         market_credit: float,
-        min_credit: float = 0.15,
+        min_credit: float = 0.09,
         max_model_market_diff: float = 0.30,
         is_ib_market: bool = True,
     ) -> Tuple[bool, Optional[str]]:
         """Evaluate whether a spread's theoretical credit and NBBO market credit meet safety criteria.
 
         Rules:
-        1. Both theo_credit and market_credit must meet min_credit (>= 0.15).
-        2. Market discounts due to bid-ask friction (e.g. theo=0.30, market in [0.15, 0.20, 0.25, 0.30])
+        1. Both theo_credit and market_credit must meet min_credit (>= 0.09).
+        2. Market discounts due to bid-ask friction (e.g. theo=0.30, market in [0.09, 0.15, 0.20, 0.25, 0.30])
            are fully ALLOWED.
         3. Adverse Selection: Only trigger abort if market_credit > theo_credit and
            (market_credit - theo_credit) / theo_credit > max_model_market_diff (e.g. theo=0.30 vs market=0.40).
@@ -246,8 +246,8 @@ class BaseOptionTradeBot:
         parser.add_argument(
             "--min-credit",
             type=float,
-            default=0.15,
-            help="Minimum acceptable net credit (default: 0.15, minimum allowed: 0.15)",
+            default=0.09,
+            help="Minimum acceptable net credit (default: 0.09, minimum allowed: 0.09)",
         )
         parser.add_argument(
             "--quantity",
@@ -289,13 +289,13 @@ class BaseOptionTradeBot:
         )
         args = parser.parse_args()
 
-        # Enforce minimum credit floor of 0.15
-        if args.min_credit < 0.15:
+        # Enforce minimum credit floor of 0.09
+        if args.min_credit < 0.09:
             print(
-                f"[!] Warning: min-credit ({args.min_credit:.2f}) is below safe minimum floor (0.15). "
-                "Overriding to 0.15."
+                f"[!] Warning: min-credit ({args.min_credit:.2f}) is below safe minimum floor (0.09). "
+                "Overriding to 0.09."
             )
-            args.min_credit = 0.15
+            args.min_credit = 0.09
 
         if args.always_put_spread:
             args.iron_condor = False

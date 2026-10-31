@@ -69,7 +69,7 @@ The bot automatically skips trading (`event_filter.py`) on high-volatility event
 To prevent trading during extreme volatility dislocations or selling mispriced options into severe tail-risk events:
 - The bot computes the market-implied IV and delta directly from the NBBO mid price using Black-Scholes inversion.
 - **Asymmetric Adverse Selection Check**: If the market spread credit (or sell leg market price) exceeds the model theoretical price by more than **30%** (`market_credit > theo_credit * 1.30`), the trade is **immediately aborted**. This protects against market makers pricing in severe downside risk/volatility spikes that lag in the theoretical model (the primary cause of the Oct 29 loss).
-- **Bid-Ask Friction Tolerance**: If the market mid credit is lower than theoretical credit due to standard bid-ask friction (e.g. theoretical credit of $0.30 vs market mid of $0.15), it is **allowed** as long as it satisfies the minimum credit floor ($\ge \$0.15$). The walk-the-book algorithm can walk down to $0.15$ and will hold for 60 seconds before canceling.
+- **Bid-Ask Friction Tolerance**: If the market mid credit is lower than theoretical credit due to standard bid-ask friction (e.g. theoretical credit of $0.30 vs market mid of $0.15), it is **allowed** as long as it satisfies the minimum credit floor ($\ge \$0.09$). The walk-the-book algorithm can walk down to $0.09$ and will hold for 60 seconds before canceling.
 
 ### 3. Pre-Trade BAG Combo Verification & Adverse Selection Detection
 - Before placing combo orders, the bot queries market quotes for the synthetic BAG contract.

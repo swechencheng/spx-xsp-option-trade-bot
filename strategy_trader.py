@@ -25,13 +25,13 @@ class BaseCreditSpreadTrader:
         ib_client: IB,
         walk_step: float = 0.05,
         walk_interval: int = 5,
-        min_credit: float = 0.15,
+        min_credit: float = 0.09,
         quantity: int = 1,
     ):
         self.ib = ib_client
         self.walk_step = walk_step
         self.walk_interval = walk_interval
-        self.min_credit = max(0.15, min_credit)
+        self.min_credit = max(0.09, min_credit)
         self.quantity = quantity
 
     def execute_spread(
