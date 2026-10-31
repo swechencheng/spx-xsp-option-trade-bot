@@ -1,25 +1,29 @@
+"""Strategy execution via Walk-The-Book Limit Order placement on IBKR.
+
+Handles combo creation (BAG) for:
+- 2-leg Credit Spreads (Bull Put Spread / Bear Call Spread)
+- 4-leg Iron Condor (Sell Put, Buy Put, Sell Call, Buy Call)
+
+Execution logic:
+  1. Submit BAG combo order with theoretical spread as initial Credit limit price
+  2. If not filled after walk_interval seconds, cancel & replace with (Credit - walk_step)
+  3. Repeat until filled or Credit drops below min_credit (safety threshold)
+"""
+
+import math
+from typing import Optional
 from ib_async import IB, Option, Contract, ComboLeg, LimitOrder
+from utils import get_ny_timestamp
 
 
 class BaseCreditSpreadTrader:
-    """Base Credit Spread Trading Executor (Walk-the-Book automatic repricing)
-
-    Strategy Structure:
-      SELL Delta-targeted Option (Collect Premium) + BUY 1-strike-away Option (Pay Premium)
-      Net Effect = Receive Credit (Net Premium) on a 1-wide spread
-
-    Order Management:
-      1. Submit BAG combo order with theoretical spread as initial Credit limit price
-      2. Check fill status every interval seconds
-      3. If not filled, reduce Credit by walk step and modify order
-      4. Repeat steps 2-3 until filled, or cancel order if Credit < min credit
-    """
+    """Base class providing shared Walk-The-Book order execution logic."""
 
     def __init__(
         self,
         ib_client: IB,
-        walk_step: float = 0.01,
-        walk_interval: int = 10,
+        walk_step: float = 0.05,
+        walk_interval: int = 5,
         min_credit: float = 0.09,
         quantity: int = 1,
     ):
@@ -31,73 +35,45 @@ class BaseCreditSpreadTrader:
 
     def execute_spread(
         self,
-        strategy_name: str,
         ticker_symbol: str,
         sell_leg_info: dict,
         buy_leg_info: dict,
-        trading_class: str = "",
+        trading_class: str,
     ):
-        """Build and execute a Credit Spread combo order with walk-the-book repricing.
-
-        Args:
-            strategy_name:  Name of the strategy (e.g., "Bull Put Spread")
-            ticker_symbol:  Ticker symbol (e.g., "XSP")
-            sell_leg_info:  Dict from OptionFinder.find_option() — the sell leg
-            buy_leg_info:   Dict from OptionFinder.find_option() — the buy leg
-
-        Returns:
-            Filled Trade object on success, or None if cancelled / below min credit.
-        """
-        print("\n" + "=" * 60)
-        print(f"  {strategy_name} Trading Executor")
-        print("=" * 60)
-
-        # --- Build and qualify IBKR contracts for both legs ---
+        """Constructs and executes a 2-leg Credit Spread."""
+        # --- Qualify Option Contracts ---
         sell_leg = Option(
             ticker_symbol,
             sell_leg_info["expiry"],
             sell_leg_info["strike"],
             sell_leg_info["option_type"],
-            "CBOE",
+            "SMART",
             tradingClass=trading_class,
-            currency="USD",
         )
         buy_leg = Option(
             ticker_symbol,
             buy_leg_info["expiry"],
             buy_leg_info["strike"],
             buy_leg_info["option_type"],
-            "CBOE",
+            "SMART",
             tradingClass=trading_class,
-            currency="USD",
         )
+
         self.ib.qualifyContracts(sell_leg, buy_leg)
 
-        print(
-            f"  Sell Leg (SELL) : {sell_leg.localSymbol}"
-            f"  (Strike={sell_leg_info['strike']}, Δ={sell_leg_info['theo_delta']:.4f})"
+        # Theoretical net credit from selected strikes
+        initial_credit = round(
+            sell_leg_info["theo_price"] - buy_leg_info["theo_price"], 2
         )
         print(
-            f"  Buy Leg  (BUY)  : {buy_leg.localSymbol}"
-            f"  (Strike={buy_leg_info['strike']}, Δ={buy_leg_info['theo_delta']:.4f})"
-        )
-
-        # --- Calculate initial Credit ---
-        # Spread Credit = Sell Leg Theo Price - Buy Leg Theo Price
-        raw_initial_credit = sell_leg_info["theo_price"] - buy_leg_info["theo_price"]
-        # Round initial credit to the nearest walk_step increment
-        steps = round(raw_initial_credit / self.walk_step)
-        initial_credit = max(self.min_credit, steps * self.walk_step)
-        initial_credit = round(initial_credit, 2)
-
-        print(
-            f"\n  Theoretical Credit: {initial_credit:.2f} (Raw: {raw_initial_credit:.2f})"
+            f"{get_ny_timestamp()} Theoretical Credit: {initial_credit:.2f}"
+            f" (Raw: {sell_leg_info['theo_price'] - buy_leg_info['theo_price']:.2f})"
         )
 
         if initial_credit < self.min_credit:
             print(
-                f"  ⚠ Theoretical Credit ({initial_credit:.2f}) is below minimum "
-                f"threshold ({self.min_credit:.2f}), abandoning trade."
+                f"{get_ny_timestamp()} ⛔ Initial theoretical credit ({initial_credit:.2f}) is below minimum"
+                f" threshold ({self.min_credit:.2f}), abandoning trade."
             )
             return None
 
@@ -118,6 +94,30 @@ class BaseCreditSpreadTrader:
 
     def _walk_the_book(self, combo: Contract, initial_credit: float):
         """Submit the combo order and walk the limit price down to ensure fill."""
+        # --- Pre-trade BAG market quote verification ---
+        try:
+            self.ib.reqMarketDataType(1)
+            bag_tickers = self.ib.reqTickers(combo)
+            if bag_tickers:
+                bag_t = bag_tickers[0]
+                bid = bag_t.bid if not math.isnan(bag_t.bid) else None
+                ask = bag_t.ask if not math.isnan(bag_t.ask) else None
+                if bid is not None and ask is not None and (bid != 0 or ask != 0):
+                    bag_mid = (bid + ask) / 2.0
+                    bag_credit = abs(bag_mid)
+                    print(
+                        f"{get_ny_timestamp()}   Pre-trade BAG quote: Bid={bid:.2f}, Ask={ask:.2f} (Mid Credit: ${bag_credit:.2f})"
+                    )
+                    # If market credit is wildly different from our calculated credit
+                    diff = abs(bag_credit - initial_credit)
+                    if diff > max(0.25, initial_credit * 0.40):
+                        print(
+                            f"{get_ny_timestamp()}   ⚠️ Warning: BAG market quote credit (${bag_credit:.2f}) differs "
+                            f"significantly from leg calculation (${initial_credit:.2f}). Market may be volatile."
+                        )
+        except Exception as e:
+            print(f"{get_ny_timestamp()}   (Note: BAG market quote check skipped: {e})")
+
         # --- Submit initial limit order ---
         # IBKR BAG Combo: For credit spreads, a negative limitPrice means net income received
         current_credit = initial_credit
@@ -134,7 +134,7 @@ class BaseCreditSpreadTrader:
 
         trade = self.ib.placeOrder(combo, order)
         print(
-            f"\n  📤 Order submitted | Credit: {current_credit:.2f}"
+            f"\n{get_ny_timestamp()}   📤 Order submitted | Credit: {current_credit:.2f}"
             f" (limitPrice={limit_price:.2f})"
         )
 
@@ -144,18 +144,27 @@ class BaseCreditSpreadTrader:
             self.ib.sleep(0.1)  # Extra tick to let status propagate
 
             status = trade.orderStatus.status
-            print(f"  ⏱  Order status: {status}")
+            print(f"{get_ny_timestamp()}   ⏱  Order status: {status}")
 
             if status == "Filled":
                 fill_price = trade.orderStatus.avgFillPrice
-                print(f"\n  ✅ Order filled! Fill price: {fill_price:.2f}")
-                print(f"  Actual Credit received: {abs(fill_price):.2f}")
+                actual_credit = abs(fill_price)
+                print(
+                    f"\n{get_ny_timestamp()}   ✅ Order filled! Fill price: {fill_price:.2f}"
+                )
+                print(f"{get_ny_timestamp()}   Actual Credit received: {actual_credit:.2f}")
+
+                # Adverse selection diagnostic: if fill price is substantially higher than limit price
+                if actual_credit >= initial_credit + 0.20:
+                    print(
+                        f"{get_ny_timestamp()}   ⚠️  WARNING: Actual credit received (${actual_credit:.2f}) "
+                        f"is higher than limit credit (${initial_credit:.2f}) by ${actual_credit - initial_credit:.2f}! "
+                        "This indicates strong adverse market movement / volatility spike at execution."
+                    )
                 return trade
 
             if status in ("Cancelled", "ApiCancelled", "Inactive"):
                 # Auto-healing: Check if we were rejected for being too aggressive (Error 202)
-                # IBKR message: "We cannot accept an order at a limit price at or more aggressive than -1.375.
-                # Please submit your order using a limit price that is closer to the current market price of -1.7."
                 log_msgs = [
                     entry.message
                     for entry in trade.log
@@ -178,10 +187,10 @@ class BaseCreditSpreadTrader:
 
                             if new_credit > current_credit:
                                 print(
-                                    f"\n  [Auto-Healing] Initial credit {current_credit:.2f} was too aggressive!"
+                                    f"\n{get_ny_timestamp()}   [Auto-Healing] Initial credit {current_credit:.2f} was too aggressive!"
                                 )
                                 print(
-                                    f"  [Auto-Healing] Restarting walk-the-book from {new_credit:.2f} down to {self.min_credit:.2f}"
+                                    f"{get_ny_timestamp()}   [Auto-Healing] Restarting walk-the-book from {new_credit:.2f} down to {self.min_credit:.2f}"
                                 )
                                 current_credit = new_credit
                                 limit_price = -current_credit
@@ -196,12 +205,14 @@ class BaseCreditSpreadTrader:
                                 order.overridePercentageConstraints = True
                                 trade = self.ib.placeOrder(combo, order)
                                 print(
-                                    f"  🔄 Repricing order (Auto-Heal) | New Credit: {current_credit:.2f}"
+                                    f"{get_ny_timestamp()}   🔄 Repricing order (Auto-Heal) | New Credit: {current_credit:.2f}"
                                     f" (limitPrice={limit_price:.2f})"
                                 )
                                 continue
 
-                print(f"\n  ❌ Order cancelled or inactive (Status: {status})")
+                print(
+                    f"\n{get_ny_timestamp()}   ❌ Order cancelled or inactive (Status: {status})"
+                )
                 return None
 
             # Not filled -> reduce Credit and reprice
@@ -209,22 +220,18 @@ class BaseCreditSpreadTrader:
 
             if current_credit < self.min_credit:
                 print(
-                    f"  ⛔ Credit ({current_credit:.2f}) dropped below minimum"
+                    f"{get_ny_timestamp()}   ⛔ Credit ({current_credit:.2f}) dropped below minimum"
                     f" threshold ({self.min_credit:.2f}), cancelling order."
                 )
                 self.ib.cancelOrder(order)
                 self.ib.sleep(1)
                 return None
 
-            # IBKR sometimes rejects combo in-place modification with Warning 105
-            # "Order being modified does not match original order."
-            # We will cancel and replace to be perfectly robust.
             self.ib.cancelOrder(order)
             self.ib.sleep(0.5)
 
             limit_price = -current_credit
 
-            # Create a completely new order object
             order = LimitOrder(
                 action="BUY",
                 totalQuantity=self.quantity,
@@ -236,7 +243,7 @@ class BaseCreditSpreadTrader:
 
             trade = self.ib.placeOrder(combo, order)
             print(
-                f"  🔄 Repricing order (Cancel/Replace) | New Credit: {current_credit:.2f}"
+                f"{get_ny_timestamp()}   🔄 Repricing order (Cancel/Replace) | New Credit: {current_credit:.2f}"
                 f" (limitPrice={limit_price:.2f})"
             )
 
@@ -249,14 +256,24 @@ class BullPutSpreadTrader(BaseCreditSpreadTrader):
         ticker_symbol: str,
         sell_put_info: dict,
         buy_put_info: dict,
-        trading_class: str = "",
+        trading_class: str,
     ):
+        print("=" * 60)
+        print("  Bull Put Spread Trading Executor")
+        print("=" * 60)
+        print(
+            f"  Sell Leg (SELL) : SPXW  {sell_put_info['expiry'][2:]}P"
+            f"{int(sell_put_info['strike'] * 1000):08d}  "
+            f"(Strike={sell_put_info['strike']}, Δ={sell_put_info['theo_delta']:.4f})"
+        )
+        print(
+            f"  Buy Leg  (BUY)  : SPXW  {buy_put_info['expiry'][2:]}P"
+            f"{int(buy_put_info['strike'] * 1000):08d}  "
+            f"(Strike={buy_put_info['strike']}, Δ={buy_put_info['theo_delta']:.4f})"
+        )
+
         return self.execute_spread(
-            strategy_name="Bull Put Spread",
-            ticker_symbol=ticker_symbol,
-            sell_leg_info=sell_put_info,
-            buy_leg_info=buy_put_info,
-            trading_class=trading_class,
+            ticker_symbol, sell_put_info, buy_put_info, trading_class
         )
 
 
@@ -268,21 +285,30 @@ class BearCallSpreadTrader(BaseCreditSpreadTrader):
         ticker_symbol: str,
         sell_call_info: dict,
         buy_call_info: dict,
-        trading_class: str = "",
+        trading_class: str,
     ):
+        print("=" * 60)
+        print("  Bear Call Spread Trading Executor")
+        print("=" * 60)
+        print(
+            f"  Sell Leg (SELL) : SPXW  {sell_call_info['expiry'][2:]}C"
+            f"{int(sell_call_info['strike'] * 1000):08d}  "
+            f"(Strike={sell_call_info['strike']}, Δ={sell_call_info['theo_delta']:.4f})"
+        )
+        print(
+            f"  Buy Leg  (BUY)  : SPXW  {buy_call_info['expiry'][2:]}C"
+            f"{int(buy_call_info['strike'] * 1000):08d}  "
+            f"(Strike={buy_call_info['strike']}, Δ={buy_call_info['theo_delta']:.4f})"
+        )
+
         return self.execute_spread(
-            strategy_name="Bear Call Spread",
-            ticker_symbol=ticker_symbol,
-            sell_leg_info=sell_call_info,
-            buy_leg_info=buy_call_info,
-            trading_class=trading_class,
+            ticker_symbol, sell_call_info, buy_call_info, trading_class
         )
 
 
 class IronCondorTrader(BaseCreditSpreadTrader):
-    """Iron Condor Trading Executor
+    """Iron Condor Trading Executor.
 
-    An Iron Condor is a simultaneous Bull Put Spread + Bear Call Spread.
     All 4 legs are submitted as a single BAG combo order.
     """
 
@@ -293,100 +319,82 @@ class IronCondorTrader(BaseCreditSpreadTrader):
         buy_put_info: dict,
         sell_call_info: dict,
         buy_call_info: dict,
-        trading_class: str = "",
+        trading_class: str,
     ):
-        """Build and execute an Iron Condor combo order.
-
-        Args:
-            ticker_symbol:   Ticker symbol (e.g., "SPX")
-            sell_put_info:   Sell put leg dict (higher put strike)
-            buy_put_info:    Buy put leg dict (lower put strike)
-            sell_call_info:  Sell call leg dict (lower call strike)
-            buy_call_info:   Buy call leg dict (higher call strike)
-            trading_class:   IBKR trading class (e.g., "SPXW")
-
-        Returns:
-            Filled Trade object on success, or None if cancelled / below min credit.
-        """
-        print("\n" + "=" * 60)
+        print("=" * 60)
         print("  Iron Condor Trading Executor")
         print("=" * 60)
+        print(
+            f"  Sell Put  (SELL) : SPXW  {sell_put_info['expiry'][2:]}P"
+            f"{int(sell_put_info['strike'] * 1000):08d}  (Strike={sell_put_info['strike']})"
+        )
+        print(
+            f"  Buy Put   (BUY)  : SPXW  {buy_put_info['expiry'][2:]}P"
+            f"{int(buy_put_info['strike'] * 1000):08d}  (Strike={buy_put_info['strike']})"
+        )
+        print(
+            f"  Sell Call (SELL) : SPXW  {sell_call_info['expiry'][2:]}C"
+            f"{int(sell_call_info['strike'] * 1000):08d}  (Strike={sell_call_info['strike']})"
+        )
+        print(
+            f"  Buy Call  (BUY)  : SPXW  {buy_call_info['expiry'][2:]}C"
+            f"{int(buy_call_info['strike'] * 1000):08d}  (Strike={buy_call_info['strike']})"
+        )
 
-        # --- Build and qualify all 4 legs ---
+        # --- Qualify Option Contracts ---
         sell_put = Option(
             ticker_symbol,
             sell_put_info["expiry"],
             sell_put_info["strike"],
-            "P",
-            "CBOE",
+            sell_put_info["option_type"],
+            "SMART",
             tradingClass=trading_class,
-            currency="USD",
         )
         buy_put = Option(
             ticker_symbol,
             buy_put_info["expiry"],
             buy_put_info["strike"],
-            "P",
-            "CBOE",
+            buy_put_info["option_type"],
+            "SMART",
             tradingClass=trading_class,
-            currency="USD",
         )
         sell_call = Option(
             ticker_symbol,
             sell_call_info["expiry"],
             sell_call_info["strike"],
-            "C",
-            "CBOE",
+            sell_call_info["option_type"],
+            "SMART",
             tradingClass=trading_class,
-            currency="USD",
         )
         buy_call = Option(
             ticker_symbol,
             buy_call_info["expiry"],
             buy_call_info["strike"],
-            "C",
-            "CBOE",
+            buy_call_info["option_type"],
+            "SMART",
             tradingClass=trading_class,
-            currency="USD",
         )
+
         self.ib.qualifyContracts(sell_put, buy_put, sell_call, buy_call)
 
-        print(
-            f"  Sell Put  (SELL) : {sell_put.localSymbol}  (Strike={sell_put_info['strike']})"
+        put_side_credit = sell_put_info["theo_price"] - buy_put_info["theo_price"]
+        call_side_credit = (
+            sell_call_info["theo_price"] - buy_call_info["theo_price"]
         )
-        print(
-            f"  Buy Put   (BUY)  : {buy_put.localSymbol}  (Strike={buy_put_info['strike']})"
-        )
-        print(
-            f"  Sell Call (SELL) : {sell_call.localSymbol}  (Strike={sell_call_info['strike']})"
-        )
-        print(
-            f"  Buy Call  (BUY)  : {buy_call.localSymbol}  (Strike={buy_call_info['strike']})"
-        )
-
-        # --- Calculate initial combined Credit ---
-        # Theoretical prices should be passed in the dict as 'theo_price'
-        put_credit = sell_put_info["theo_price"] - buy_put_info["theo_price"]
-        call_credit = sell_call_info["theo_price"] - buy_call_info["theo_price"]
-        raw_total_credit = put_credit + call_credit
-
-        steps = round(raw_total_credit / self.walk_step)
-        initial_credit = max(self.min_credit, steps * self.walk_step)
-        initial_credit = round(
-            round(initial_credit / self.walk_step) * self.walk_step, 2
-        )
+        raw_initial_credit = put_side_credit + call_side_credit
+        initial_credit = round(raw_initial_credit, 2)
 
         print(
-            f"\n  Put Side Credit: {put_credit:.2f} | Call Side Credit: {call_credit:.2f}"
+            f"{get_ny_timestamp()}   Put Side Credit: {put_side_credit:.2f} | Call Side Credit: {call_side_credit:.2f}"
         )
         print(
-            f"  Total Theoretical Credit: {initial_credit:.2f} (Raw: {raw_total_credit:.2f})"
+            f"{get_ny_timestamp()}   Total Theoretical Credit: {initial_credit:.2f} (Raw: {raw_initial_credit:.2f})"
         )
 
         if initial_credit < self.min_credit:
             print(
-                f"  ⚠ Theoretical Credit ({initial_credit:.2f}) is below minimum "
-                f"threshold ({self.min_credit:.2f}), abandoning trade."
+                f"{get_ny_timestamp()} ⛔ Initial theoretical credit ({initial_credit:.2f}) is below minimum"
+                f" threshold ({self.min_credit:.2f}), abandoning trade."
             )
             return None
 

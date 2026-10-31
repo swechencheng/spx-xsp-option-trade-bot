@@ -1,13 +1,27 @@
 """Utility functions for option pricing.
 
-Provides theoretical price and delta calculations, plus trading-time T computation
-used for initial credit estimation in the walk-the-book algorithm.
+Provides theoretical price and delta calculations, implied volatility solver,
+trading-time T computation, and New York timezone timestamps.
 """
 
-import math
 import datetime
+import math
+from typing import Optional
 import pytz
+from scipy.optimize import brentq
 from scipy.stats import norm
+
+EASTERN_TZ = pytz.timezone("America/New_York")
+
+
+def get_ny_now() -> datetime.datetime:
+    """Return current datetime in America/New_York."""
+    return datetime.datetime.now(EASTERN_TZ)
+
+
+def get_ny_timestamp() -> str:
+    """Return formatted timestamp in America/New_York (e.g. '[2026-10-31 15:52:00 EDT]')."""
+    return get_ny_now().strftime("[%Y-%m-%d %H:%M:%S %Z]")
 
 
 def calculate_trading_time_t(exp_date_str: str) -> float:
@@ -80,3 +94,39 @@ def calculate_bs_delta(S, K, T, r, sigma, option_type="P", q=0.0):
         return math.exp(-q * T) * norm.cdf(d1)
     else:
         return math.exp(-q * T) * (norm.cdf(d1) - 1.0)
+
+
+def calculate_implied_vol(
+    S: float,
+    K: float,
+    T: float,
+    r: float,
+    price: float,
+    option_type: str = "P",
+    q: float = 0.0,
+) -> Optional[float]:
+    """Calculate Black-Scholes implied volatility from market option price."""
+    if T <= 0 or price <= 0:
+        return None
+
+    # Check against theoretical intrinsic lower bound with discount factor
+    intrinsic = (
+        max(0.0, K * math.exp(-r * T) - S * math.exp(-q * T))
+        if option_type.upper() == "P"
+        else max(0.0, S * math.exp(-q * T) - K * math.exp(-r * T))
+    )
+    if price < intrinsic:
+        return None
+
+    try:
+        def obj(vol):
+            return calculate_bs_price(S, K, T, r, vol, option_type, q=q) - price
+
+        f_low = obj(0.001)
+        f_high = obj(5.0)
+        if f_low * f_high > 0:
+            return None
+
+        return float(brentq(obj, 0.001, 5.0, xtol=1e-5))
+    except Exception:
+        return None

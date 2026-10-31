@@ -1,0 +1,15 @@
+{
+    "IBKR": {
+        "real": {
+            "host": "127.0.0.1",
+            "port": 4001,
+            "client_id": 15,
+            "account": "U12345678"
+        },
+        "paper": {
+            "host": "127.0.0.1",
+            "port": 4002,
+            "client_id": 16
+        }
+    }
+}

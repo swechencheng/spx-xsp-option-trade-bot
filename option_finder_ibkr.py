@@ -1,22 +1,29 @@
-import math
 import datetime
+import math
+from typing import Optional
 from ib_async import IB, Index, Option
 
-from option_finder_theory import calculate_trading_time_t
+from utils import (
+    calculate_bs_delta,
+    calculate_implied_vol,
+    calculate_trading_time_t,
+    get_ny_timestamp,
+)
 
 
 class OptionFinder:
     """Finds the best-fit option contract for a given delta target using Market Data.
 
-    Uses IBKR's reqTickers to fetch real-time market Greeks and prices
-    without incurring the $0.01 regulatory snapshot fee.
+    Uses IBKR's reqTickers on the Real Account session to fetch real-time market
+    Greeks and prices without incurring the $0.01 regulatory snapshot fee.
 
     Returns:
         dict with keys: strike, expiry, market_price, bid, ask, theo_price, theo_delta, theo_iv, option_type
     """
 
-    def __init__(self, ib_client: IB):
+    def __init__(self, ib_client: IB, max_model_market_diff: float = 0.30):
         self.ib = ib_client
+        self.max_model_market_diff = max_model_market_diff
 
     def find_option(
         self,
@@ -45,7 +52,7 @@ class OptionFinder:
             dict: { "strike", "expiry", "market_price", "bid", "ask", "theo_price", "theo_delta", "theo_iv", "option_type" }
         """
         print(
-            f"\n--- Finding optimal {ticker_symbol} market option"
+            f"\n{get_ny_timestamp()} --- Finding optimal {ticker_symbol} market option"
             f" ({option_type} | Target Delta: {target_delta_abs} | {dte_target}DTE) ---"
         )
 
@@ -82,7 +89,9 @@ class OptionFinder:
         selected_expiry = valid_expirations[target_idx]
 
         T = calculate_trading_time_t(selected_expiry)
-        print(f"Locked expiration: {selected_expiry} (T={T:.4f} trading years)")
+        print(
+            f"{get_ny_timestamp()} Locked expiration: {selected_expiry} (T={T:.4f} trading years)"
+        )
 
         # Determine anchor offset based on underlying ticker
         if ticker_symbol.upper() == "SPX":
@@ -124,7 +133,7 @@ class OptionFinder:
             current_direction = "up"
 
         print(
-            f"Anchor strike: {start_strike:.2f} (Spot: {spot:.2f}, Offset: ±{anchor_offset:.1f}) | "
+            f"{get_ny_timestamp()} Anchor strike: {start_strike:.2f} (Spot: {spot:.2f}, Offset: ±{anchor_offset:.1f}) | "
             f"Initial search direction: {current_direction.upper()}"
         )
 
@@ -184,12 +193,12 @@ class OptionFinder:
             batch = get_next_batch(current_direction, page_size)
             if not batch:
                 print(
-                    f"No more strikes available in {current_direction.upper()} direction."
+                    f"{get_ny_timestamp()} No more strikes available in {current_direction.upper()} direction."
                 )
                 break
 
             print(
-                f"\n[Page {page_num}] Fetching {len(batch)} contracts in {current_direction.upper()} direction "
+                f"\n{get_ny_timestamp()} [Page {page_num}] Fetching {len(batch)} contracts in {current_direction.upper()} direction "
                 f"(strikes: {min(c.strike for c in batch):.1f} - {max(c.strike for c in batch):.1f})..."
             )
             page_tickers = self._fetch_page_greeks(batch)
@@ -210,43 +219,46 @@ class OptionFinder:
             max_d = max(all_deltas.values())
 
             print(
-                f"  Evaluated delta range so far: [{min_d:.4f}, {max_d:.4f}] "
+                f"{get_ny_timestamp()}   Evaluated delta range so far: [{min_d:.4f}, {max_d:.4f}] "
                 f"(Target: {target_delta_abs:.4f})"
             )
 
             # Check if target delta is within range
             if min_d <= target_delta_abs <= max_d:
                 print(
-                    f"  🎯 Target delta {target_delta_abs:.4f} is within range [{min_d:.4f}, {max_d:.4f}]!"
+                    f"{get_ny_timestamp()}   🎯 Target delta {target_delta_abs:.4f} is within range [{min_d:.4f}, {max_d:.4f}]!"
                 )
                 break
 
             # Decide next direction
             if target_delta_abs < min_d:
-                # Target delta is smaller than all evaluated contracts (need further OTM)
                 next_direction = "down" if is_put else "up"
                 print(
-                    f"  Target delta {target_delta_abs:.4f} < min evaluated {min_d:.4f}. "
+                    f"{get_ny_timestamp()}   Target delta {target_delta_abs:.4f} < min evaluated {min_d:.4f}. "
                     f"Fetching next {page_size} contracts {next_direction.upper()}..."
                 )
             else:
-                # Target delta is larger than all evaluated contracts (need closer to ATM)
                 next_direction = "up" if is_put else "down"
                 print(
-                    f"  Target delta {target_delta_abs:.4f} > max evaluated {max_d:.4f}. "
+                    f"{get_ny_timestamp()}   Target delta {target_delta_abs:.4f} > max evaluated {max_d:.4f}. "
                     f"Fetching next {page_size} contracts {next_direction.upper()}..."
                 )
 
             # Check if we can continue in next_direction
             if next_direction == "down" and cursor_down >= len(candidate_down):
-                print("  No more downward strikes available. Stopping search.")
+                print(
+                    f"{get_ny_timestamp()}   No more downward strikes available. Stopping search."
+                )
                 break
             elif next_direction == "up" and cursor_up >= len(candidate_up):
-                print("  No more upward strikes available. Stopping search.")
+                print(
+                    f"{get_ny_timestamp()}   No more upward strikes available. Stopping search."
+                )
                 break
 
             current_direction = next_direction
 
+        # Signed target delta: negative for puts, positive for calls
         target_signed_delta = (
             target_delta_abs if option_type.upper() == "C" else -target_delta_abs
         )
@@ -271,11 +283,6 @@ class OptionFinder:
 
         if not best_ticker:
             raise Exception("Failed to find any option with populated Greeks.")
-
-        print(
-            f"Best strike found: [{best_strike}]"
-            f" (Market Delta: {best_ticker.modelGreeks.delta:.4f} vs Target: {target_signed_delta})"
-        )
 
         bid = best_ticker.bid if not math.isnan(best_ticker.bid) else 0.0
         ask = best_ticker.ask if not math.isnan(best_ticker.ask) else 0.0
@@ -306,10 +313,66 @@ class OptionFinder:
             else 0.15
         )
 
-        print(f"  Model Theoretical Price: {theo_price:.2f}")
-        print(
-            f"  Snapshot Market Price: {market_price:.2f} (Bid: {bid:.2f}, Ask: {ask:.2f})"
+        # Retrieve market data type and undPrice for diagnostic integrity
+        mkt_data_type = getattr(best_ticker, "marketDataType", 1)
+        und_price = (
+            best_ticker.modelGreeks.undPrice
+            if best_ticker.modelGreeks
+            and getattr(best_ticker.modelGreeks, "undPrice", None) is not None
+            and not math.isnan(best_ticker.modelGreeks.undPrice)
+            else spot
         )
+
+        q = 0.014 if ticker_symbol.upper() in ["SPX", "XSP"] else 0.0
+        market_implied_iv = calculate_implied_vol(
+            spot, best_strike, T, risk_free_rate, market_price, option_type, q=q
+        )
+        market_implied_delta = (
+            calculate_bs_delta(
+                spot,
+                best_strike,
+                T,
+                risk_free_rate,
+                market_implied_iv,
+                option_type,
+                q=q,
+            )
+            if market_implied_iv is not None
+            else None
+        )
+
+        print(
+            f"{get_ny_timestamp()} Best strike found: [{best_strike}]"
+            f" (Market Delta: {best_ticker.modelGreeks.delta:.4f} vs Target: {target_signed_delta})"
+        )
+        print(
+            f"{get_ny_timestamp()}   [Market Data Type: {mkt_data_type} | undPrice: {und_price:.2f}]"
+        )
+        print(
+            f"{get_ny_timestamp()}   Model Theoretical Price: {theo_price:.2f} | Model IV: {theo_iv:.4f} | Model Delta: {best_ticker.modelGreeks.delta:.4f}"
+        )
+        implied_str = (
+            f"Market-Implied IV: {market_implied_iv:.4f} | Market-Implied Delta: {market_implied_delta:.4f}"
+            if market_implied_iv is not None
+            else "Market-Implied IV: N/A"
+        )
+        print(
+            f"{get_ny_timestamp()}   Snapshot Market Price:   {market_price:.2f} (Bid: {bid:.2f}, Ask: {ask:.2f}) | {implied_str}"
+        )
+
+        # Consistency check: Model Price vs Market Price
+        if market_price > 0 and theo_price > 0:
+            divergence = abs(theo_price - market_price) / market_price
+            if divergence > self.max_model_market_diff:
+                err_msg = (
+                    f"FATAL: Model Price (${theo_price:.2f}) and Market Price (${market_price:.2f}) "
+                    f"diverge by {divergence*100:.1f}% (> {self.max_model_market_diff*100:.0f}% threshold). "
+                    f"Model Delta: {best_ticker.modelGreeks.delta:.4f}, "
+                    f"Market-Implied Delta: {market_implied_delta if market_implied_delta is not None else 'N/A'}. "
+                    "Aborting trade to prevent execution at mispriced levels."
+                )
+                print(f"{get_ny_timestamp()} ❌ {err_msg}")
+                raise Exception(err_msg)
 
         return {
             "strike": best_strike,
@@ -320,20 +383,22 @@ class OptionFinder:
             "theo_price": theo_price,
             "theo_delta": best_ticker.modelGreeks.delta,
             "theo_iv": theo_iv,
+            "market_implied_iv": market_implied_iv,
+            "market_implied_delta": market_implied_delta,
             "option_type": option_type,
         }
 
     def _fetch_page_greeks(self, valid_contracts: list) -> dict:
-        max_greeks_attempts = 6
-        min_population_rate = 1.0
+        max_greeks_attempts = 5
         tickers = []
 
         for greeks_attempt in range(1, max_greeks_attempts + 1):
-            self.ib.reqMarketDataType(4)
+            # Request Real-Time Live Streaming Data (Type 1)
+            self.ib.reqMarketDataType(1)
             tickers = self.ib.reqTickers(*valid_contracts)
 
             print(
-                f"Waiting for option Greeks to populate ({len(tickers)} contracts)... "
+                f"{get_ny_timestamp()} Waiting for option Greeks to populate ({len(tickers)} contracts)... "
                 f"[attempt {greeks_attempt}/{max_greeks_attempts}]"
             )
             timeout = 30.0
@@ -365,9 +430,13 @@ class OptionFinder:
                 or t.modelGreeks.delta is None
                 or math.isnan(t.modelGreeks.delta)
             ]
-            print(f"  Greeks populated: {populated_count}/{len(tickers)}")
+            print(
+                f"{get_ny_timestamp()}   Greeks populated: {populated_count}/{len(tickers)}"
+            )
             if unpopulated:
-                print(f"  ⚠️  Missing Greeks for strikes: {unpopulated}")
+                print(
+                    f"{get_ny_timestamp()}   ⚠️  Missing Greeks for strikes: {unpopulated}"
+                )
 
             if len(tickers) > 0 and populated_count == len(tickers):
                 for c in valid_contracts:
@@ -375,7 +444,7 @@ class OptionFinder:
                 break
 
             print(
-                f"  ⚠️  Greeks population incomplete "
+                f"{get_ny_timestamp()}   ⚠️  Greeks population incomplete "
                 f"({populated_count}/{len(tickers)} < 100%). "
                 f"Cancelling and retrying..."
             )
@@ -400,6 +469,8 @@ class OptionFinder:
         strike: float,
         option_type: str,
         theo_price_fallback: float = 0.0,
+        underlying_spot: Optional[float] = None,
+        risk_free_rate: float = 0.04,
     ) -> dict:
         """Fetch NBBO market price for a specific option contract using standard market data.
 
@@ -410,9 +481,11 @@ class OptionFinder:
             strike:              Option strike price
             option_type:         "P" for Put, "C" for Call
             theo_price_fallback: Fallback price if market data is unavailable
+            underlying_spot:     Spot price for implied vol validation
+            risk_free_rate:      Risk-free rate
 
         Returns:
-            dict: { "market_price", "bid", "ask" }
+            dict: { "market_price", "bid", "ask", "market_delta", "market_iv" }
         """
         opt_contract = Option(
             symbol=ticker_symbol,
@@ -425,9 +498,11 @@ class OptionFinder:
         )
         self.ib.qualifyContracts(opt_contract)
 
-        print(f"  Requesting market data for {opt_contract.localSymbol}...")
+        print(
+            f"{get_ny_timestamp()}   Requesting market data for {opt_contract.localSymbol}..."
+        )
 
-        self.ib.reqMarketDataType(4)
+        self.ib.reqMarketDataType(1)
         tickers = self.ib.reqTickers(opt_contract)
         ticker = tickers[0]
 
@@ -471,9 +546,26 @@ class OptionFinder:
             ):
                 market_iv = ticker.modelGreeks.impliedVol
 
+        mkt_data_type = getattr(ticker, "marketDataType", 1)
         print(
-            f"  Snapshot Market Price: {market_price:.2f} (Bid: {bid:.2f}, Ask: {ask:.2f})"
+            f"{get_ny_timestamp()}   Snapshot Market Price for Buy Leg: {market_price:.2f} "
+            f"(Bid: {bid:.2f}, Ask: {ask:.2f} | MktType: {mkt_data_type} | Model IV: {market_iv if market_iv else 'N/A'})"
         )
+
+        # Implied vol and delta check for buy leg
+        if underlying_spot and underlying_spot > 0 and market_price > 0:
+            T = calculate_trading_time_t(expiry)
+            q = 0.014 if ticker_symbol.upper() in ["SPX", "XSP"] else 0.0
+            market_implied_iv = calculate_implied_vol(
+                underlying_spot, strike, T, risk_free_rate, market_price, option_type, q=q
+            )
+            if market_implied_iv:
+                market_implied_delta = calculate_bs_delta(
+                    underlying_spot, strike, T, risk_free_rate, market_implied_iv, option_type, q=q
+                )
+                print(
+                    f"{get_ny_timestamp()}     Buy Leg Implied IV: {market_implied_iv:.4f} | Implied Delta: {market_implied_delta:.4f}"
+                )
 
         self.ib.cancelMktData(opt_contract)
 
