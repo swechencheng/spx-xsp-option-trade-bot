@@ -24,11 +24,6 @@ class SpxOptionTradeBot(BaseOptionTradeBot):
         # SPX spreads are usually 5-wide (equivalent risk to XSP 1-wide)
         return 5
 
-    @property
-    def default_max_strike_price_away(self) -> float:
-        # SPX short strike distance cap from spot price
-        return 120.0
-
 
 if __name__ == "__main__":
     bot = SpxOptionTradeBot()

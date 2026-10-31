@@ -36,7 +36,6 @@ class OptionFinder:
         option_type: str,
         target_delta_abs: float,
         dte_target: int,
-        max_strike_price_away: float = None,
     ) -> dict:
         """Find the option strike closest to target_delta_abs for the nearest DTE.
 
@@ -125,18 +124,6 @@ class OptionFinder:
         # Approximately annual dividend yield for SPX/XSP
         q = 0.014 if ticker_symbol in ["SPX", "XSP"] else 0.0
 
-        limit_strike = None
-        if max_strike_price_away and max_strike_price_away > 0:
-            target_bound = (
-                underlying_spot - max_strike_price_away
-                if option_type.upper() == "P"
-                else underlying_spot + max_strike_price_away
-            )
-            eligible_strikes = [
-                s for s in cboe_chain.strikes if s % 1 == 0
-            ] or list(cboe_chain.strikes)
-            limit_strike = min(eligible_strikes, key=lambda s: abs(s - target_bound))
-
         for strike in sorted(cboe_chain.strikes):
             # Narrow search range: skip deep OTM/ITM to save compute
             if abs(strike - underlying_spot) > (underlying_spot * 0.15):
@@ -145,13 +132,6 @@ class OptionFinder:
             # half-point strikes may not exist for the selected date)
             if strike % 1 != 0:
                 continue
-
-            # Respect max_strike_price_away
-            if limit_strike is not None:
-                if option_type.upper() == "P" and strike < limit_strike:
-                    continue
-                elif option_type.upper() == "C" and strike > limit_strike:
-                    continue
 
             calc_delta = calculate_bs_delta(
                 underlying_spot, strike, T, risk_free_rate, iv, option_type, q=q
@@ -162,12 +142,6 @@ class OptionFinder:
                 min_delta_error = error
                 best_strike = strike
                 best_theo_delta = calc_delta
-
-        if limit_strike is not None and best_strike == limit_strike:
-            print(
-                f"  ⚠️  Short strike capped by max-strike-price-away ({max_strike_price_away}): "
-                f"using {best_strike} (dist from spot: {abs(underlying_spot - best_strike):.2f})"
-            )
 
         print(
             f"Best strike found: [{best_strike}]"

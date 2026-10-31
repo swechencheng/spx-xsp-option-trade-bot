@@ -28,7 +28,6 @@ class OptionFinder:
         option_type: str,
         target_delta_abs: float,
         dte_target: int,
-        max_strike_price_away: float = None,
     ) -> dict:
         """Find the option strike closest to target_delta_abs for the nearest DTE.
 
@@ -101,27 +100,11 @@ class OptionFinder:
             spot = sorted_all[len(sorted_all) // 2]
 
         is_put = option_type.upper() == "P"
-        limit_strike = None
         if is_put:
             start_strike = spot - anchor_offset
-            if max_strike_price_away and max_strike_price_away > 0:
-                target_bound = spot - max_strike_price_away
-                eligible_strikes = [
-                    s for s in target_chain.strikes if s % 1 == 0
-                ] or list(target_chain.strikes)
-                limit_strike = min(
-                    eligible_strikes, key=lambda s: abs(s - target_bound)
-                )
-                start_strike = max(start_strike, limit_strike)
-
             # Downward list: strikes <= start_strike, sorted descending (closest to start_strike first)
             candidate_down = sorted(
-                [
-                    s
-                    for s in target_chain.strikes
-                    if s <= start_strike
-                    and (limit_strike is None or s >= limit_strike)
-                ],
+                [s for s in target_chain.strikes if s <= start_strike],
                 reverse=True,
             )
             # Upward list: strikes > start_strike, sorted ascending (closest to start_strike first)
@@ -129,24 +112,9 @@ class OptionFinder:
             current_direction = "down"
         else:
             start_strike = spot + anchor_offset
-            if max_strike_price_away and max_strike_price_away > 0:
-                target_bound = spot + max_strike_price_away
-                eligible_strikes = [
-                    s for s in target_chain.strikes if s % 1 == 0
-                ] or list(target_chain.strikes)
-                limit_strike = min(
-                    eligible_strikes, key=lambda s: abs(s - target_bound)
-                )
-                start_strike = min(start_strike, limit_strike)
-
             # Upward list: strikes >= start_strike, sorted ascending (closest to start_strike first)
             candidate_up = sorted(
-                [
-                    s
-                    for s in target_chain.strikes
-                    if s >= start_strike
-                    and (limit_strike is None or s <= limit_strike)
-                ]
+                [s for s in target_chain.strikes if s >= start_strike]
             )
             # Downward list: strikes < start_strike, sorted descending (closest to start_strike first)
             candidate_down = sorted(
@@ -155,13 +123,8 @@ class OptionFinder:
             )
             current_direction = "up"
 
-        limit_info = (
-            f", Max Away: {max_strike_price_away} (Limit Strike: {limit_strike})"
-            if limit_strike is not None
-            else ""
-        )
         print(
-            f"Anchor strike: {start_strike:.2f} (Spot: {spot:.2f}, Offset: ±{anchor_offset:.1f}{limit_info}) | "
+            f"Anchor strike: {start_strike:.2f} (Spot: {spot:.2f}, Offset: ±{anchor_offset:.1f}) | "
             f"Initial search direction: {current_direction.upper()}"
         )
 
@@ -308,12 +271,6 @@ class OptionFinder:
 
         if not best_ticker:
             raise Exception("Failed to find any option with populated Greeks.")
-
-        if limit_strike is not None and best_strike == limit_strike:
-            print(
-                f"  ⚠️  Short strike capped by max-strike-price-away ({max_strike_price_away}): "
-                f"using {best_strike} (dist from spot: {abs(spot - best_strike):.2f})"
-            )
 
         print(
             f"Best strike found: [{best_strike}]"
