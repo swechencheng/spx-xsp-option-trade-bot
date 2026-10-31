@@ -635,27 +635,38 @@ class BaseOptionTradeBot:
                     notifier.send_message(msg)
                     sys.exit(0)
 
-                # Check model vs market spread credit divergence for Iron Condor
-                if total_theo_credit > 0 and args.ib_market:
-                    divergence = abs(total_theo_credit - total_mkt_credit) / total_theo_credit
+                # Adverse Selection Check: Only trigger if NBBO Market Credit exceeds Theoretical Credit
+                # (e.g. theo=0.30 vs market=0.40 -> +33.3% > 30% abort; market discount due to friction is allowed)
+                if total_mkt_credit > total_theo_credit and total_theo_credit > 0 and args.ib_market:
+                    overpricing_ratio = (total_mkt_credit - total_theo_credit) / total_theo_credit
                     print(
-                        f"{get_ny_timestamp()}   Total Model-Market Divergence: {divergence * 100:.1f}% "
+                        f"{get_ny_timestamp()}   Total IC Market Overpricing vs Model: +{overpricing_ratio * 100:.1f}% "
                         f"(Threshold: {args.max_model_market_diff * 100:.0f}%)"
                     )
-                    if divergence > args.max_model_market_diff:
+                    if overpricing_ratio > args.max_model_market_diff:
                         err_msg = (
-                            f"FATAL: Iron Condor Theoretical Credit (${total_theo_credit:.2f}) and NBBO Market Credit "
-                            f"(${total_mkt_credit:.2f}) diverge by {divergence * 100:.1f}% (> {args.max_model_market_diff * 100:.0f}% threshold). "
-                            "Aborting trade to prevent execution at mispriced levels."
+                            f"FATAL: Iron Condor NBBO Market Credit (${total_mkt_credit:.2f}) exceeds Theoretical Credit "
+                            f"(${total_theo_credit:.2f}) by {overpricing_ratio * 100:.1f}% (> {args.max_model_market_diff * 100:.0f}% threshold). "
+                            "Aborting trade to prevent execution during abnormal market risk / adverse selection."
                         )
                         print(f"{get_ny_timestamp()} ❌ {err_msg}")
                         msg = (
                             self._build_header(now_est)
                             + self._build_market_section(today_close, today_ema20, regime)
-                            + f"\n⚠️ <b>Trade Aborted (Divergence Check)</b>\n{err_msg}"
+                            + f"\n⚠️ <b>Trade Aborted (Adverse Selection Check)</b>\n{err_msg}"
                         )
                         notifier.send_message(msg)
                         sys.exit(0)
+                elif total_mkt_credit <= total_theo_credit:
+                    discount_ratio = (
+                        (total_theo_credit - total_mkt_credit) / total_theo_credit
+                        if total_theo_credit > 0
+                        else 0.0
+                    )
+                    print(
+                        f"{get_ny_timestamp()}   Iron Condor Market Credit is at a {discount_ratio * 100:.1f}% discount to theoretical "
+                        f"due to bid-ask friction (Theo: ${total_theo_credit:.2f}, Market: ${total_mkt_credit:.2f}). Allowed."
+                    )
 
                 trader = IronCondorTrader(
                     trading_ib,
@@ -743,27 +754,38 @@ class BaseOptionTradeBot:
                     notifier.send_message(msg)
                     sys.exit(0)
 
-                # Check model vs market spread credit divergence (relative to theoretical value)
-                if theo_spread_credit > 0 and args.ib_market:
-                    divergence = abs(theo_spread_credit - market_spread_credit) / theo_spread_credit
+                # Adverse Selection Check: Only trigger if NBBO Market Credit exceeds Theoretical Credit
+                # (e.g. theo=0.30 vs market=0.40 -> +33.3% > 30% abort; market discount due to friction is allowed)
+                if market_spread_credit > theo_spread_credit and theo_spread_credit > 0 and args.ib_market:
+                    overpricing_ratio = (market_spread_credit - theo_spread_credit) / theo_spread_credit
                     print(
-                        f"{get_ny_timestamp()}   Spread Model-Market Divergence: {divergence * 100:.1f}% "
+                        f"{get_ny_timestamp()}   Spread Market Overpricing vs Model: +{overpricing_ratio * 100:.1f}% "
                         f"(Threshold: {args.max_model_market_diff * 100:.0f}%)"
                     )
-                    if divergence > args.max_model_market_diff:
+                    if overpricing_ratio > args.max_model_market_diff:
                         err_msg = (
-                            f"FATAL: Spread Theoretical Credit (${theo_spread_credit:.2f}) and NBBO Market Credit "
-                            f"(${market_spread_credit:.2f}) diverge by {divergence * 100:.1f}% (> {args.max_model_market_diff * 100:.0f}% threshold). "
-                            "Aborting trade to prevent execution at mispriced levels."
+                            f"FATAL: NBBO Market Credit (${market_spread_credit:.2f}) exceeds Theoretical Credit (${theo_spread_credit:.2f}) "
+                            f"by {overpricing_ratio * 100:.1f}% (> {args.max_model_market_diff * 100:.0f}% threshold). "
+                            "Aborting trade to prevent execution during abnormal market risk / adverse selection."
                         )
                         print(f"{get_ny_timestamp()} ❌ {err_msg}")
                         msg = (
                             self._build_header(now_est)
                             + self._build_market_section(today_close, today_ema20, regime)
-                            + f"\n⚠️ <b>Trade Aborted (Divergence Check)</b>\n{err_msg}"
+                            + f"\n⚠️ <b>Trade Aborted (Adverse Selection Check)</b>\n{err_msg}"
                         )
                         notifier.send_message(msg)
                         sys.exit(0)
+                elif market_spread_credit <= theo_spread_credit:
+                    discount_ratio = (
+                        (theo_spread_credit - market_spread_credit) / theo_spread_credit
+                        if theo_spread_credit > 0
+                        else 0.0
+                    )
+                    print(
+                        f"{get_ny_timestamp()}   Spread Market Credit is at a {discount_ratio * 100:.1f}% discount to theoretical "
+                        f"due to bid-ask friction (Theo: ${theo_spread_credit:.2f}, Market: ${market_spread_credit:.2f}). Allowed."
+                    )
 
                 if strategy_to_execute == "bull":
                     trader = BullPutSpreadTrader(

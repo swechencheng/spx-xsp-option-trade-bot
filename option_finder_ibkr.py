@@ -360,19 +360,25 @@ class OptionFinder:
             f"{get_ny_timestamp()}   Snapshot Market Price:   {market_price:.2f} (Bid: {bid:.2f}, Ask: {ask:.2f}) | {implied_str}"
         )
 
-        # Consistency check: Model Price vs Market Price (relative to Theoretical Model Price)
-        if market_price > 0 and theo_price > 0:
-            divergence = abs(theo_price - market_price) / theo_price
+        # Adverse Selection Consistency check: Abort if Sell Leg Market Price significantly exceeds Model Price
+        if market_price > theo_price and theo_price > 0:
+            divergence = (market_price - theo_price) / theo_price
             if divergence > self.max_model_market_diff:
                 err_msg = (
-                    f"FATAL: Model Price (${theo_price:.2f}) and Market Price (${market_price:.2f}) "
-                    f"diverge by {divergence*100:.1f}% (> {self.max_model_market_diff*100:.0f}% threshold). "
+                    f"FATAL: Sell leg Market Price (${market_price:.2f}) exceeds Model Price (${theo_price:.2f}) "
+                    f"by {divergence*100:.1f}% (> {self.max_model_market_diff*100:.0f}% threshold). "
                     f"Model Delta: {best_ticker.modelGreeks.delta:.4f}, "
                     f"Market-Implied Delta: {market_implied_delta if market_implied_delta is not None else 'N/A'}. "
-                    "Aborting trade to prevent execution at mispriced levels."
+                    "Aborting trade to prevent execution during abnormal market risk / adverse selection."
                 )
                 print(f"{get_ny_timestamp()} ❌ {err_msg}")
                 raise Exception(err_msg)
+        elif market_price <= theo_price and theo_price > 0:
+            discount = (theo_price - market_price) / theo_price
+            print(
+                f"{get_ny_timestamp()}   Sell leg Market Price (${market_price:.2f}) is at a {discount*100:.1f}% discount to Model Price (${theo_price:.2f}) "
+                "due to bid-ask friction. Allowed."
+            )
 
         return {
             "strike": best_strike,

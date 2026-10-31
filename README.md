@@ -65,10 +65,11 @@ The bot automatically skips trading (`event_filter.py`) on high-volatility event
   - **Pre-Market Earnings**: No trade if a mega-cap tech stock reports tomorrow before market open.
   - **After-Hours Earnings**: No trade if a mega-cap tech stock reports today after the close.
 
-### 2. Model Price vs Market Price Consistency Check
-To prevent trading during extreme volatility dislocations or stale quotes:
+### 2. Model Price vs Market Price Consistency & Adverse Selection Protection
+To prevent trading during extreme volatility dislocations or selling mispriced options into severe tail-risk events:
 - The bot computes the market-implied IV and delta directly from the NBBO mid price using Black-Scholes inversion.
-- If the theoretical model price (`modelGreeks.optPrice`) diverges from the market mid price by more than **30%** (`--max-model-market-diff 0.30`), the trade is **immediately aborted**.
+- **Asymmetric Adverse Selection Check**: If the market spread credit (or sell leg market price) exceeds the model theoretical price by more than **30%** (`market_credit > theo_credit * 1.30`), the trade is **immediately aborted**. This protects against market makers pricing in severe downside risk/volatility spikes that lag in the theoretical model (the primary cause of the Oct 29 loss).
+- **Bid-Ask Friction Tolerance**: If the market mid credit is lower than theoretical credit due to standard bid-ask friction (e.g. theoretical credit of $0.30 vs market mid of $0.15), it is **allowed** as long as it satisfies the minimum credit floor ($\ge \$0.15$). The walk-the-book algorithm can walk down to $0.15$ and will hold for 60 seconds before canceling.
 
 ### 3. Pre-Trade BAG Combo Verification & Adverse Selection Detection
 - Before placing combo orders, the bot queries market quotes for the synthetic BAG contract.
