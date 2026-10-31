@@ -844,6 +844,29 @@ class BaseOptionTradeBot:
             if trade and trade.orderStatus.status == "Filled":
                 fill_price = abs(trade.orderStatus.avgFillPrice)
                 total_credit_received = fill_price * 100 * args.quantity
+
+                # Allow a short moment for IBKR CommissionReport to arrive
+                if trade.fills and not any(getattr(fill, "commissionReport", None) for fill in trade.fills):
+                    trading_ib.sleep(0.5)
+
+                commissions = [
+                    fill.commissionReport.commission
+                    for fill in getattr(trade, "fills", [])
+                    if getattr(fill, "commissionReport", None)
+                    and getattr(fill.commissionReport, "commission", None) is not None
+                ]
+                total_commission = round(sum(commissions), 2) if commissions else 0.0
+                net_credit_received = round(total_credit_received - total_commission, 2)
+
+                if total_commission > 0:
+                    premium_lines = (
+                        f"  Gross Premium: ${total_credit_received:.2f}\n"
+                        f"  Commission & Fees: -${total_commission:.2f}\n"
+                        f"  Net Premium Collected: ${net_credit_received:.2f}"
+                    )
+                else:
+                    premium_lines = f"  Total Premium Collected: ${total_credit_received:.2f} (Gross)"
+
                 msg = (
                     self._build_header(now_est)
                     + self._build_market_section(
@@ -853,7 +876,7 @@ class BaseOptionTradeBot:
                     + f"<pre>{legs_section}</pre>"
                     + f"✅ <b>Order Filled!</b>\n"
                     + f"  Net Credit: ${fill_price:.2f}/share\n"
-                    + f"  Total Premium Collected: ${total_credit_received:.2f}"
+                    + premium_lines
                 )
             else:
                 msg = (
