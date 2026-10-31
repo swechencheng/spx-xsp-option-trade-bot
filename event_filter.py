@@ -186,12 +186,55 @@ NFP_DATES: Dict[datetime.date, str] = {
 }
 
 
+# US General Elections (Presidential and Midterm Elections - 1st Tuesday after 1st Monday in Nov)
+ELECTION_DATES: Dict[datetime.date, str] = {
+    datetime.date(2024, 11, 5): "US Presidential Election",
+    datetime.date(2026, 11, 3): "US Midterm Election",
+    datetime.date(2028, 11, 7): "US Presidential Election",
+    datetime.date(2030, 11, 5): "US Midterm Election",
+}
+
+
+def get_pmi_dates(year: int) -> Dict[datetime.date, str]:
+    """Generate ISM Manufacturing (1st business day) and Services (3rd business day) PMI dates."""
+    dates: Dict[datetime.date, str] = {}
+    for m in range(1, 13):
+        d = datetime.date(year, m, 1)
+        count = 0
+        b1, b3 = None, None
+        while True:
+            is_hol = (
+                (d.month == 1 and d.day == 1)
+                or (d.month == 7 and d.day == 4)
+                or (d.month == 12 and d.day == 25)
+            )
+            if d.weekday() < 5 and not is_hol:
+                count += 1
+                if count == 1:
+                    b1 = d
+                elif count == 3:
+                    b3 = d
+                    break
+            d += datetime.timedelta(days=1)
+        if b1:
+            dates[b1] = "ISM Manufacturing PMI"
+        if b3:
+            dates[b3] = "ISM Services PMI"
+    return dates
+
+
 def get_all_macro_events() -> Dict[datetime.date, str]:
-    """Combine all built-in macro events and optional events_calendar.json overrides."""
+    """Combine all built-in macro events (FOMC, CPI, NFP, Elections, PMI) and custom overrides."""
     events: Dict[datetime.date, str] = {}
     events.update(FOMC_DATES)
     events.update(CPI_DATES)
     events.update(NFP_DATES)
+    events.update(ELECTION_DATES)
+
+    # Add PMI dates for past, current, and upcoming years
+    current_year = datetime.date.today().year
+    for y in range(current_year - 1, current_year + 3):
+        events.update(get_pmi_dates(y))
 
     # Optional custom file: events_calendar.json
     custom_file = os.path.join(
@@ -219,7 +262,7 @@ def get_next_trading_day(d: datetime.date) -> datetime.date:
 
 
 def check_macro_event_filter(today: datetime.date) -> Tuple[bool, Optional[str]]:
-    """Check if today or the next trading day has a major macro event (FOMC, CPI, NFP).
+    """Check if today or the next trading day has a major macro event (FOMC, CPI, NFP, US Elections, PMI).
 
     Rule: Do not trade on the evening of the event (today), OR the evening before (eve of event).
     """
@@ -357,3 +400,4 @@ if __name__ == "__main__":
         print(f"🚫 TRADING BLOCKED: {reason}")
     else:
         print("✅ No blocking macro events or major tech earnings detected. Trading allowed.")
+

@@ -68,3 +68,4 @@ def load_config(config_path: Optional[str] = None) -> StrategyConfig:
     )
 
     return StrategyConfig(real=real_cfg, paper=paper_cfg, raw_config=data)
+

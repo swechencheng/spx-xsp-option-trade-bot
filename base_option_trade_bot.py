@@ -202,8 +202,8 @@ class BaseOptionTradeBot:
         parser.add_argument(
             "--min-credit",
             type=float,
-            default=0.09,
-            help="Minimum acceptable net credit (default: 0.09)",
+            default=0.15,
+            help="Minimum acceptable net credit (default: 0.15, minimum allowed: 0.15)",
         )
         parser.add_argument(
             "--quantity",
@@ -244,6 +244,14 @@ class BaseOptionTradeBot:
             help="Skip trading window schedule timing check",
         )
         args = parser.parse_args()
+
+        # Enforce minimum credit floor of 0.15
+        if args.min_credit < 0.15:
+            print(
+                f"[!] Warning: min-credit ({args.min_credit:.2f}) is below safe minimum floor (0.15). "
+                "Overriding to 0.15."
+            )
+            args.min_credit = 0.15
 
         if args.always_put_spread:
             args.iron_condor = False
@@ -587,6 +595,68 @@ class BaseOptionTradeBot:
                 )
 
                 # Trader uses trading_ib (submits to paper or real account)
+                put_theo_credit = round(sell_put["theo_price"] - buy_put["theo_price"], 2)
+                put_mkt_credit = round(
+                    sell_put.get("market_price", sell_put["theo_price"])
+                    - buy_put.get("market_price", buy_put["theo_price"]),
+                    2,
+                )
+                call_theo_credit = round(sell_call["theo_price"] - buy_call["theo_price"], 2)
+                call_mkt_credit = round(
+                    sell_call.get("market_price", sell_call["theo_price"])
+                    - buy_call.get("market_price", buy_call["theo_price"]),
+                    2,
+                )
+                total_theo_credit = round(put_theo_credit + call_theo_credit, 2)
+                total_mkt_credit = round(put_mkt_credit + call_mkt_credit, 2)
+
+                print(f"\n{get_ny_timestamp()} === Iron Condor Credit & Consistency Evaluation ===")
+                print(
+                    f"{get_ny_timestamp()}   Put Spread:  Theo Credit=${put_theo_credit:.2f} | NBBO Market Credit=${put_mkt_credit:.2f}"
+                )
+                print(
+                    f"{get_ny_timestamp()}   Call Spread: Theo Credit=${call_theo_credit:.2f} | NBBO Market Credit=${call_mkt_credit:.2f}"
+                )
+                print(
+                    f"{get_ny_timestamp()}   Total IC:    Theo Credit=${total_theo_credit:.2f} | NBBO Market Credit=${total_mkt_credit:.2f}"
+                )
+
+                if total_theo_credit < args.min_credit:
+                    err_msg = (
+                        f"Theoretical Iron Condor credit (${total_theo_credit:.2f}) is below minimum acceptable credit "
+                        f"threshold (${args.min_credit:.2f}). Aborting trade."
+                    )
+                    print(f"{get_ny_timestamp()} ❌ {err_msg}")
+                    msg = (
+                        self._build_header(now_est)
+                        + self._build_market_section(today_close, today_ema20, regime)
+                        + f"\n⚠️ <b>Trade Aborted</b>\n{err_msg}"
+                    )
+                    notifier.send_message(msg)
+                    sys.exit(0)
+
+                # Check model vs market spread credit divergence for Iron Condor
+                if total_theo_credit > 0 and args.ib_market:
+                    divergence = abs(total_theo_credit - total_mkt_credit) / total_theo_credit
+                    print(
+                        f"{get_ny_timestamp()}   Total Model-Market Divergence: {divergence * 100:.1f}% "
+                        f"(Threshold: {args.max_model_market_diff * 100:.0f}%)"
+                    )
+                    if divergence > args.max_model_market_diff:
+                        err_msg = (
+                            f"FATAL: Iron Condor Theoretical Credit (${total_theo_credit:.2f}) and NBBO Market Credit "
+                            f"(${total_mkt_credit:.2f}) diverge by {divergence * 100:.1f}% (> {args.max_model_market_diff * 100:.0f}% threshold). "
+                            "Aborting trade to prevent execution at mispriced levels."
+                        )
+                        print(f"{get_ny_timestamp()} ❌ {err_msg}")
+                        msg = (
+                            self._build_header(now_est)
+                            + self._build_market_section(today_close, today_ema20, regime)
+                            + f"\n⚠️ <b>Trade Aborted (Divergence Check)</b>\n{err_msg}"
+                        )
+                        notifier.send_message(msg)
+                        sys.exit(0)
+
                 trader = IronCondorTrader(
                     trading_ib,
                     walk_step=args.walk_step,
@@ -643,6 +713,57 @@ class BaseOptionTradeBot:
                     option_type,
                     target_delta,
                 )
+
+                theo_spread_credit = round(sell_leg["theo_price"] - buy_leg["theo_price"], 2)
+                sell_mkt = sell_leg.get("market_price", sell_leg["theo_price"])
+                buy_mkt = buy_leg.get("market_price", buy_leg["theo_price"])
+                market_spread_credit = round(sell_mkt - buy_mkt, 2)
+
+                print(f"\n{get_ny_timestamp()} === Spread Credit & Consistency Evaluation ===")
+                print(
+                    f"{get_ny_timestamp()}   Theoretical Spread Credit: ${theo_spread_credit:.2f} "
+                    f"(Sell Theo: {sell_leg['theo_price']:.2f}, Buy Theo: {buy_leg['theo_price']:.2f})"
+                )
+                print(
+                    f"{get_ny_timestamp()}   NBBO Market Spread Credit: ${market_spread_credit:.2f} "
+                    f"(Sell Mid: {sell_mkt:.2f}, Buy Mid: {buy_mkt:.2f})"
+                )
+
+                if theo_spread_credit < args.min_credit:
+                    err_msg = (
+                        f"Theoretical spread credit (${theo_spread_credit:.2f}) is below minimum acceptable credit "
+                        f"threshold (${args.min_credit:.2f}). Aborting trade."
+                    )
+                    print(f"{get_ny_timestamp()} ❌ {err_msg}")
+                    msg = (
+                        self._build_header(now_est)
+                        + self._build_market_section(today_close, today_ema20, regime)
+                        + f"\n⚠️ <b>Trade Aborted</b>\n{err_msg}"
+                    )
+                    notifier.send_message(msg)
+                    sys.exit(0)
+
+                # Check model vs market spread credit divergence (relative to theoretical value)
+                if theo_spread_credit > 0 and args.ib_market:
+                    divergence = abs(theo_spread_credit - market_spread_credit) / theo_spread_credit
+                    print(
+                        f"{get_ny_timestamp()}   Spread Model-Market Divergence: {divergence * 100:.1f}% "
+                        f"(Threshold: {args.max_model_market_diff * 100:.0f}%)"
+                    )
+                    if divergence > args.max_model_market_diff:
+                        err_msg = (
+                            f"FATAL: Spread Theoretical Credit (${theo_spread_credit:.2f}) and NBBO Market Credit "
+                            f"(${market_spread_credit:.2f}) diverge by {divergence * 100:.1f}% (> {args.max_model_market_diff * 100:.0f}% threshold). "
+                            "Aborting trade to prevent execution at mispriced levels."
+                        )
+                        print(f"{get_ny_timestamp()} ❌ {err_msg}")
+                        msg = (
+                            self._build_header(now_est)
+                            + self._build_market_section(today_close, today_ema20, regime)
+                            + f"\n⚠️ <b>Trade Aborted (Divergence Check)</b>\n{err_msg}"
+                        )
+                        notifier.send_message(msg)
+                        sys.exit(0)
 
                 if strategy_to_execute == "bull":
                     trader = BullPutSpreadTrader(
@@ -830,13 +951,23 @@ class BaseOptionTradeBot:
                 underlying_spot=underlying_spot,
                 risk_free_rate=risk_free_rate,
             )
-            buy_leg_info["theo_price"] = buy_market["market_price"]
+            if buy_market.get("model_price") is not None:
+                buy_leg_info["theo_price"] = buy_market["model_price"]
+            buy_leg_info["market_price"] = buy_market["market_price"]
+            buy_leg_info["bid"] = buy_market["bid"]
+            buy_leg_info["ask"] = buy_market["ask"]
             if buy_market.get("market_delta") is not None:
                 buy_leg_info["theo_delta"] = buy_market["market_delta"]
                 buy_theo_delta = buy_market["market_delta"]
             if buy_market.get("market_iv") is not None:
                 buy_leg_info["theo_iv"] = buy_market["market_iv"]
                 buy_iv = buy_market["market_iv"]
+        else:
+            buy_leg_info["market_price"] = buy_theo_price
+            buy_leg_info["bid"] = buy_theo_price
+            buy_leg_info["ask"] = buy_theo_price
+            if "market_price" not in sell_leg_info:
+                sell_leg_info["market_price"] = sell_leg_info["theo_price"]
 
         print(
             f"\n{get_ny_timestamp()} --- Buy leg: {strike_offset}-wide offset ---\n"

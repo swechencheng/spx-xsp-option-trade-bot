@@ -94,6 +94,17 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+### 3. IBKR Market Data Subscriptions (For `--ib-market`)
+
+If you intend to run the bot with the `--ib-market` flag to utilize real-time model Greeks and the live SPX spot price, you **must** have active market data subscriptions on your real IBKR account to avoid "No security definition" or missing data errors.
+
+**You need BOTH of the following subscriptions:**
+
+1. **US Securities Snapshot and Futures Value Bundle (NP,L1)**: This is the mandatory foundational base package required by IBKR for streaming US market data.
+2. **Cboe One Add-On Bundle (NP,L1)**: This add-on provides the real-time index spot pricing specifically for CBOE indices (like SPX and VIX).
+
+_(Note: IBKR requires the "US Securities Snapshot" bundle as a prerequisite before it allows you to purchase the "Cboe One Add-On")._
+
 ---
 
 ## Usage & Automation

@@ -11,6 +11,7 @@ Execution logic:
 """
 
 import math
+import time
 from typing import Optional
 from ib_async import IB, Option, Contract, ComboLeg, LimitOrder
 from utils import get_ny_timestamp
@@ -24,13 +25,13 @@ class BaseCreditSpreadTrader:
         ib_client: IB,
         walk_step: float = 0.05,
         walk_interval: int = 5,
-        min_credit: float = 0.09,
+        min_credit: float = 0.15,
         quantity: int = 1,
     ):
         self.ib = ib_client
         self.walk_step = walk_step
         self.walk_interval = walk_interval
-        self.min_credit = min_credit
+        self.min_credit = max(0.15, min_credit)
         self.quantity = quantity
 
     def execute_spread(
@@ -138,6 +139,8 @@ class BaseCreditSpreadTrader:
             f" (limitPrice={limit_price:.2f})"
         )
 
+        min_credit_wait_start = None
+
         # --- Walk-the-Book Loop ---
         while True:
             self.ib.sleep(self.walk_interval)
@@ -193,6 +196,7 @@ class BaseCreditSpreadTrader:
                                     f"{get_ny_timestamp()}   [Auto-Healing] Restarting walk-the-book from {new_credit:.2f} down to {self.min_credit:.2f}"
                                 )
                                 current_credit = new_credit
+                                min_credit_wait_start = None
                                 limit_price = -current_credit
 
                                 order = LimitOrder(
@@ -215,18 +219,38 @@ class BaseCreditSpreadTrader:
                 )
                 return None
 
-            # Not filled -> reduce Credit and reprice
-            current_credit = round(current_credit - self.walk_step, 2)
+            # If current_credit is at or below the minimum credit floor, hold for 60 seconds
+            if current_credit <= self.min_credit + 1e-5:
+                if min_credit_wait_start is None:
+                    min_credit_wait_start = time.time()
+                    print(
+                        f"\n{get_ny_timestamp()}   ⏳ Limit price reached minimum credit floor (${self.min_credit:.2f}). "
+                        "Holding order for 60 seconds to seek fill..."
+                    )
 
-            if current_credit < self.min_credit:
-                print(
-                    f"{get_ny_timestamp()}   ⛔ Credit ({current_credit:.2f}) dropped below minimum"
-                    f" threshold ({self.min_credit:.2f}), cancelling order."
-                )
-                self.ib.cancelOrder(order)
-                self.ib.sleep(1)
-                return None
+                elapsed_wait = time.time() - min_credit_wait_start
+                if elapsed_wait >= 60.0:
+                    print(
+                        f"\n{get_ny_timestamp()}   ⛔ Order remained unfilled after 60s at minimum credit (${self.min_credit:.2f}). "
+                        "Cancelling order."
+                    )
+                    self.ib.cancelOrder(order)
+                    self.ib.sleep(1)
+                    return None
+                else:
+                    remaining = int(round(60.0 - elapsed_wait))
+                    print(
+                        f"{get_ny_timestamp()}   ⏳ Waiting for fill at min credit (${self.min_credit:.2f})... "
+                        f"{remaining}s remaining"
+                    )
+                    continue
 
+            # Not filled and above min credit -> reduce Credit towards floor
+            next_credit = round(current_credit - self.walk_step, 2)
+            if next_credit < self.min_credit:
+                next_credit = self.min_credit
+
+            current_credit = next_credit
             self.ib.cancelOrder(order)
             self.ib.sleep(0.5)
 

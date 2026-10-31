@@ -360,9 +360,9 @@ class OptionFinder:
             f"{get_ny_timestamp()}   Snapshot Market Price:   {market_price:.2f} (Bid: {bid:.2f}, Ask: {ask:.2f}) | {implied_str}"
         )
 
-        # Consistency check: Model Price vs Market Price
+        # Consistency check: Model Price vs Market Price (relative to Theoretical Model Price)
         if market_price > 0 and theo_price > 0:
-            divergence = abs(theo_price - market_price) / market_price
+            divergence = abs(theo_price - market_price) / theo_price
             if divergence > self.max_model_market_diff:
                 err_msg = (
                     f"FATAL: Model Price (${theo_price:.2f}) and Market Price (${market_price:.2f}) "
@@ -536,6 +536,7 @@ class OptionFinder:
 
         market_delta = None
         market_iv = None
+        model_price = None
         if ticker.modelGreeks:
             if ticker.modelGreeks.delta is not None and not math.isnan(
                 ticker.modelGreeks.delta
@@ -545,6 +546,10 @@ class OptionFinder:
                 ticker.modelGreeks.impliedVol
             ):
                 market_iv = ticker.modelGreeks.impliedVol
+            if ticker.modelGreeks.optPrice is not None and not math.isnan(
+                ticker.modelGreeks.optPrice
+            ):
+                model_price = ticker.modelGreeks.optPrice
 
         mkt_data_type = getattr(ticker, "marketDataType", 1)
         print(
@@ -575,4 +580,5 @@ class OptionFinder:
             "ask": ask,
             "market_delta": market_delta,
             "market_iv": market_iv,
+            "model_price": model_price,
         }

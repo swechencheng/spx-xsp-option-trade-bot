@@ -136,3 +136,4 @@ if __name__ == "__main__":
     print(f"Market Close Time: {close_time.strftime('%H:%M')} ET")
     print(f"Target Bot Trigger Time: {trigger_time.strftime('%H:%M')} ET")
     print(f"Minutes Until Close: {get_minutes_until_close(now):.1f} min")
+
