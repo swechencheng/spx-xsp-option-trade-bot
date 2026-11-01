@@ -142,15 +142,62 @@ Available CLI arguments:
 - `--ignore-events`: Bypass FOMC, CPI, NFP, US Election, PMI, and tech earnings blackout filters.
 - `--ignore-time-check`: Bypass trading schedule timing check.
 
-### Fully Automated Setup (`cron`)
+### Fully Automated Setup (Cron or Systemd Timer)
 
+#### Option A: `cron`
 Run `bot_launcher.sh` every minute via `crontab -e`:
 
 ```bash
-* * * * * /path/to/bot_launcher.sh >> /tmp/bot_output.log 2>&1
+* * * * * /home/ubuntu/spx-xsp-option-trade-bot/bot_launcher.sh >> /tmp/bot_output.log 2>&1
 ```
 
 `bot_launcher.sh` queries `market_schedule.py --check-trigger` every minute in `America/New_York` time. It automatically wakes up at **15:52 ET** on regular days (or **12:52 ET** on early close days), runs the strategy, and exits silently on off-hours or weekends.
+
+#### Option B: `systemd` Timer + Service (Recommended on modern Linux)
+
+1. Create `/etc/systemd/system/spx-xsp-trading-bot.service`:
+
+```ini
+[Unit]
+Description=SPX/XSP Option Trading Bot Execution Service
+After=network.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/spx-xsp-option-trade-bot
+Environment="PYTHONUNBUFFERED=1"
+Environment="PATH=/home/ubuntu/spx-xsp-option-trade-bot/venv/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/bin/bash /home/ubuntu/spx-xsp-option-trade-bot/bot_launcher.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+2. Create `/etc/systemd/system/spx-xsp-trading-bot.timer`:
+
+```ini
+[Unit]
+Description=Timer to trigger SPX/XSP Option Trading Bot during US market hours
+RefersTo=spx-xsp-trading-bot.service
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* *:*:00
+AccuracySec=1s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable and start with:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now spx-xsp-trading-bot.timer
+```
 
 ---
 
@@ -196,7 +243,7 @@ venv/bin/python delta_monitor_daemon.py --check-once
 
 ### Systemd Service Configuration (Linux)
 
-Create `/etc/systemd/system/xsp-delta-monitor.service`:
+Create `/etc/systemd/system/spx-xsp-delta-monitor.service`:
 
 ```ini
 [Unit]
@@ -207,9 +254,9 @@ After=network.target
 Type=simple
 User=ubuntu
 Group=ubuntu
-WorkingDirectory=/home/ubuntu/xsp_opt_strat
+WorkingDirectory=/home/ubuntu/spx-xsp-option-trade-bot
 Environment="PYTHONUNBUFFERED=1"
-ExecStart=/home/ubuntu/xsp_opt_strat/venv/bin/python -u delta_monitor_daemon.py
+ExecStart=/home/ubuntu/spx-xsp-option-trade-bot/venv/bin/python -u delta_monitor_daemon.py
 Restart=always
 RestartSec=10
 
@@ -220,7 +267,8 @@ WantedBy=multi-user.target
 Enable and start with:
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now xsp-delta-monitor.service
-sudo journalctl -u xsp-delta-monitor.service -f
+sudo systemctl enable --now spx-xsp-delta-monitor.service
+sudo journalctl -u spx-xsp-delta-monitor.service -f
 ```
+
 
