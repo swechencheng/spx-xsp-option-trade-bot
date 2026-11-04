@@ -372,7 +372,7 @@ class BaseOptionTradeBot:
             print(
                 f"{get_ny_timestamp()} [*] Checking Macro Events (FOMC, CPI, NFP) and Major Tech Earnings..."
             )
-            skip_event, event_reason = event_filter.should_skip_trade(today_date)
+            skip_event, event_reason = event_filter.should_skip_trade(now_est)
             if skip_event:
                 print(
                     f"{get_ny_timestamp()} 🚫 [Event Filter Block] {event_reason}. Aborting trade."
