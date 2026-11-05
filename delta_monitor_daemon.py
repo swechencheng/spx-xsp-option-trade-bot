@@ -432,7 +432,12 @@ class DeltaMonitorDaemon:
         trade: ActiveTradeRecord,
         breached_leg: OptionLegRecord,
     ) -> Tuple[Contract, int, float]:
-        """Construct the closing contract (either 2-leg BAG combo or single Option) to buy back position.
+        """Construct the 2-leg BAG combo contract to close the entire spread together.
+
+        For a downside put breach, this pairs the breached Short Put with the protective Long Put:
+          - Leg 1: BUY back Short Put (ratio 1)
+          - Leg 2: SELL to close Long Put (ratio 1)
+        Both legs execute atomically in a single combo order to eliminate downside gamma risk.
 
         Returns (combo_contract, quantity, estimated_initial_mid)
         """
@@ -466,6 +471,52 @@ class DeltaMonitorDaemon:
         else:
             long_leg = trade.long_leg
 
+        # Ensure protective long leg is found from live IBKR positions if missing from record
+        if long_leg is None:
+            try:
+                live_positions = self.order_ib.positions()
+                candidates = []
+                for p in live_positions:
+                    c = getattr(p, "contract", None)
+                    if not c or getattr(p, "position", 0) <= 0:
+                        continue
+                    if getattr(c, "secType", "") == "OPT" and getattr(c, "symbol", "") == trade.symbol:
+                        c_exp = str(getattr(c, "lastTradeDateOrContractMonth", "")).replace("-", "").strip()
+                        if c_exp == short_leg.expiry and getattr(c, "right", "") == short_leg.option_type:
+                            if short_leg.option_type == "P" and float(c.strike) < short_leg.strike:
+                                candidates.append((float(c.strike), c))
+                            elif short_leg.option_type == "C" and float(c.strike) > short_leg.strike:
+                                candidates.append((float(c.strike), c))
+                if candidates:
+                    if short_leg.option_type == "P":
+                        candidates.sort(key=lambda x: x[0], reverse=True)
+                    else:
+                        candidates.sort(key=lambda x: x[0])
+                    best_strike, best_c = candidates[0]
+                    long_leg = OptionLegRecord(
+                        strike=best_strike,
+                        option_type=best_c.right,
+                        expiry=short_leg.expiry,
+                        action="BUY",
+                        con_id=getattr(best_c, "conId", None),
+                        trading_class=getattr(best_c, "tradingClass", None) or trade.trading_class,
+                    )
+                    trade.long_leg = long_leg
+                    logger.info(
+                        "Found protective long leg from IBKR positions: %s %.1f%s. Closing entire spread combo together.",
+                        trade.symbol,
+                        long_leg.strike,
+                        long_leg.option_type,
+                    )
+            except Exception as e:
+                logger.error("Error searching IBKR positions for protective long leg: %s", e)
+
+        if not long_leg:
+            raise ValueError(
+                f"Cannot find corresponding protective long leg for {trade.symbol} {short_leg.strike}{short_leg.option_type}! "
+                "Downside spread must be closed together as a combo."
+            )
+
         short_contract = Option(
             trade.symbol,
             short_leg.expiry,
@@ -474,57 +525,47 @@ class DeltaMonitorDaemon:
             "SMART",
             tradingClass=short_leg.trading_class or trade.trading_class,
         )
-        self.order_ib.qualifyContracts(short_contract)
+        long_contract = Option(
+            trade.symbol,
+            long_leg.expiry,
+            long_leg.strike,
+            long_leg.option_type,
+            "SMART",
+            tradingClass=long_leg.trading_class or trade.trading_class,
+        )
 
-        # Estimate short leg mid price
+        self.order_ib.qualifyContracts(short_contract, long_contract)
+
+        # 2-leg BAG combo: BUY short leg, SELL long leg
+        combo = Contract(
+            symbol=trade.symbol,
+            secType="BAG",
+            exchange="CBOE",
+            currency="USD",
+            tradingClass=trade.trading_class,
+            comboLegs=[
+                ComboLeg(conId=short_contract.conId, ratio=1, action="BUY", exchange="CBOE"),
+                ComboLeg(conId=long_contract.conId, ratio=1, action="SELL", exchange="CBOE"),
+            ],
+        )
+
+        # Estimate mid prices
         self.data_ib.reqMarketDataType(1)
-        s_tickers = self.data_ib.reqTickers(short_contract)
+        tickers = self.data_ib.reqTickers(short_contract, long_contract)
         short_mid = 0.0
-        if s_tickers:
-            s_t = s_tickers[0]
+        long_mid = 0.0
+        if len(tickers) == 2:
+            s_t, l_t = tickers[0], tickers[1]
             s_b = s_t.bid if s_t.bid and not math.isnan(s_t.bid) else 0.0
             s_a = s_t.ask if s_t.ask and not math.isnan(s_t.ask) else 0.0
             short_mid = (s_b + s_a) / 2.0 if s_b > 0 and s_a > 0 else (s_t.close or s_t.last or 0.0)
 
-        # Case 1: Spread with matching long leg -> 2-leg BAG Combo
-        if long_leg is not None:
-            long_contract = Option(
-                trade.symbol,
-                long_leg.expiry,
-                long_leg.strike,
-                long_leg.option_type,
-                "SMART",
-                tradingClass=long_leg.trading_class or trade.trading_class,
-            )
-            self.order_ib.qualifyContracts(long_contract)
+            l_b = l_t.bid if l_t.bid and not math.isnan(l_t.bid) else 0.0
+            l_a = l_t.ask if l_t.ask and not math.isnan(l_t.ask) else 0.0
+            long_mid = (l_b + l_a) / 2.0 if l_b > 0 and l_a > 0 else (l_t.close or l_t.last or 0.0)
 
-            combo = Contract(
-                symbol=trade.symbol,
-                secType="BAG",
-                exchange="CBOE",
-                currency="USD",
-                tradingClass=trade.trading_class,
-                comboLegs=[
-                    ComboLeg(conId=short_contract.conId, ratio=1, action="BUY", exchange="CBOE"),
-                    ComboLeg(conId=long_contract.conId, ratio=1, action="SELL", exchange="CBOE"),
-                ],
-            )
-
-            l_tickers = self.data_ib.reqTickers(long_contract)
-            long_mid = 0.0
-            if l_tickers:
-                l_t = l_tickers[0]
-                l_b = l_t.bid if l_t.bid and not math.isnan(l_t.bid) else 0.0
-                l_a = l_t.ask if l_t.ask and not math.isnan(l_t.ask) else 0.0
-                long_mid = (l_b + l_a) / 2.0 if l_b > 0 and l_a > 0 else (l_t.close or l_t.last or 0.0)
-
-            estimated_mid = max(0.05, round(short_mid - long_mid, 2))
-            return combo, trade.quantity, estimated_mid
-
-        # Case 2: Single short option leg -> Direct Option contract (BUY action)
-        # Note: Single-leg BAG orders are silently dropped by IBKR, so must use Option contract directly!
-        estimated_mid = max(0.05, round(short_mid, 2))
-        return short_contract, trade.quantity, estimated_mid
+        estimated_mid = max(0.05, round(short_mid - long_mid, 2))
+        return combo, trade.quantity, estimated_mid
 
     def execute_emergency_close(
         self,
@@ -540,23 +581,56 @@ class DeltaMonitorDaemon:
         start_time = time.time()
         last_tg_report_time = start_time
 
+        combo, quantity, mid_price = self.build_closing_combo(trade, breached_leg)
+        current_limit = max(0.05, mid_price)
+
+        # Resolve long leg info for reporting
+        short_leg = breached_leg
+        long_leg = trade.long_leg
+        if trade.strategy == "iron_condor" and trade.iron_condor_legs:
+            if short_leg.option_type == "P":
+                bp = trade.iron_condor_legs.get("buy_put")
+                if bp:
+                    long_leg = OptionLegRecord(
+                        strike=bp["strike"],
+                        option_type="P",
+                        expiry=bp["expiry"],
+                        action="BUY",
+                        trading_class=trade.trading_class,
+                    )
+            else:
+                bc = trade.iron_condor_legs.get("buy_call")
+                if bc:
+                    long_leg = OptionLegRecord(
+                        strike=bc["strike"],
+                        option_type="C",
+                        expiry=bc["expiry"],
+                        action="BUY",
+                        trading_class=trade.trading_class,
+                    )
+
+        spread_type_str = "Put Spread" if breached_leg.option_type == "P" else "Call Spread"
+        long_leg_str = f"{long_leg.strike:.1f}{long_leg.option_type}" if long_leg else "Long Leg"
+        spread_label = f"{trade.symbol} {breached_leg.strike:.1f}{breached_leg.option_type}/{long_leg_str} {spread_type_str}"
+
         # 1. Send immediate Alert to Telegram
         init_msg = (
-            f"🚨 <b>[0DTE Delta Breach Alert] Emergency Close Triggered!</b>\n"
+            f"🚨 <b>[0DTE Delta Breach Alert] Emergency Spread Close Triggered!</b>\n"
             f"Symbol: {trade.symbol} ({trade.trading_class})\n"
-            f"Breached Leg: {breached_leg.strike}{breached_leg.option_type} (Action: {breached_leg.action})\n"
-            f"Live Delta: <b>{breach_delta:.4f}</b> (Breached threshold |Δ| > {self.delta_threshold:.2f})\n"
+            f"Closing Entire Downside Spread: <b>{spread_label}</b>\n"
+            f"  • Breached Short Leg: {breached_leg.strike:.1f}{breached_leg.option_type} (BUY to close, Live Delta: <b>{breach_delta:.4f}</b>)\n"
+            f"  • Protective Long Leg: {long_leg_str} (SELL to close)\n"
             f"Underlying Spot: ${spot_price:.2f}\n"
             f"Quantity: {trade.quantity}\n"
-            f"Action: Walking UP from Mid Price via Walk-the-book; will convert to Market Order after 15m to guarantee fill!"
+            f"Initial Spread Mid Debit: ${current_limit:.2f}\n"
+            f"Action: Closing entire spread combo via upward walk-the-book; converts to Market Order after 15m to guarantee fill."
         )
         logger.warning(init_msg)
         self.notifier.send_message(init_msg)
 
-        combo, quantity, mid_price = self.build_closing_combo(trade, breached_leg)
-        current_limit = max(0.05, mid_price)
         logger.info(
-            "Starting emergency close: Combo constructed. Initial Mid Price: $%.2f. Walking UP by $%.2f every %ds.",
+            "Starting emergency close: 2-leg spread combo (%s) constructed. Initial Mid Price: $%.2f. Walking UP by $%.2f every %ds.",
+            spread_label,
             current_limit,
             self.walk_step,
             self.walk_interval,
@@ -578,12 +652,12 @@ class DeltaMonitorDaemon:
                         active_trade_obj.orderStatus.status if active_trade_obj else "Initializing"
                     )
                     periodic_msg = (
-                        f"⏳ <b>[0DTE Close Status Update]</b>\n"
-                        f"Symbol: {trade.symbol} {breached_leg.strike}{breached_leg.option_type}\n"
+                        f"⏳ <b>[0DTE Spread Close Status Update]</b>\n"
+                        f"Spread: {spread_label}\n"
                         f"Elapsed: {elapsed / 60.0:.1f} minutes\n"
-                        f"Target Price: ${current_limit:.2f} ({'Market Order' if is_market_order else 'Limit Walk-the-book'})\n"
+                        f"Target Spread Limit: ${current_limit:.2f} ({'Market Order' if is_market_order else 'Limit Walk-the-book'})\n"
                         f"Order Status: {status_text}\n"
-                        f"Actively seeking fill..."
+                        f"Actively seeking fill for full spread combo..."
                     )
                     self.notifier.send_message(periodic_msg)
                     last_tg_report_time = now_ts
@@ -684,15 +758,17 @@ class DeltaMonitorDaemon:
         )
 
         fill_msg = (
-            f"✅ <b>[0DTE Emergency Close Filled]</b>\n"
+            f"✅ <b>[0DTE Emergency Spread Close Filled]</b>\n"
             f"Symbol: {trade.symbol} ({trade.trading_class})\n"
-            f"Bought Back: {breached_leg.strike}{breached_leg.option_type}\n"
-            f"Average Fill Price: <b>${fill_price:.2f}/share</b>\n"
+            f"Closed Entire Spread: <b>{spread_label}</b>\n"
+            f"  • Bought Back Short Leg: {breached_leg.strike:.1f}{breached_leg.option_type}\n"
+            f"  • Sold Protective Long Leg: {long_leg_str}\n"
+            f"Average Fill Price: <b>${fill_price:.2f}/spread</b>\n"
             f"Total Closing Cost: ${total_cost:.2f}"
             + (f" (Commission: ${total_comm:.2f})\n" if total_comm > 0 else "\n")
             + f"Total Duration: {total_time_min:.1f} minutes\n"
             f"Execution Type: {'Market Order (15m Timeout Forced)' if is_market_order else 'Limit Walk-the-book'}\n"
-            f"Position fully closed. Gamma risk eliminated!"
+            f"Entire downside spread closed together as atomic combo. Downside risk eliminated!"
         )
         logger.info(fill_msg)
         self.notifier.send_message(fill_msg)
