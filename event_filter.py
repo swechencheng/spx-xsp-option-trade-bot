@@ -1,15 +1,16 @@
 """Event Filter for Macro Announcements and Major Tech Earnings.
 
-Enforces trading blackouts:
-1. Macro Events (FOMC, CPI, NFP):
-   - No trade on the eve of the event (the previous trading day evening).
-   - No trade on the day of the event (the event day evening).
-2. Major Tech Earnings:
-   - No trade if a monitored mega-cap tech stock reports earnings tomorrow pre-market (BMO)
-     or today after-hours (AMC).
+Enforces strict weekly trading blackouts:
+1. Macro Events (FOMC, CPI, NFP, US Elections, ISM PMI):
+   - If any macro event occurs in a week (Monday to Friday), no trading for that entire week.
+   - If the next trading day has an event (e.g. across weekend), no trading on the eve.
+2. Major Tech Earnings (AAPL, MSFT, NVDA, AMZN, GOOGL, GOOG, META, TSLA):
+   - If any monitored tech company reports earnings in a week (Monday to Friday), no trading for that entire week.
+   - If the next trading day has earnings, no trading on the eve.
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import datetime
 import json
 import logging
@@ -253,6 +254,30 @@ def get_all_macro_events() -> Dict[datetime.date, str]:
     return events
 
 
+def normalize_date(d: Optional[datetime.date | datetime.datetime]) -> datetime.date:
+    """Normalize input date or datetime to a date object in Eastern Time."""
+    if d is None:
+        return datetime.datetime.now(EASTERN_TZ).date()
+    if isinstance(d, datetime.datetime):
+        if d.tzinfo is not None:
+            return d.astimezone(EASTERN_TZ).date()
+        return d.date()
+    return d
+
+
+def get_week_bounds(d: datetime.date) -> Tuple[datetime.date, datetime.date]:
+    """Return (monday, friday) bounding the trading week of date d."""
+    monday = d - datetime.timedelta(days=d.weekday())
+    friday = monday + datetime.timedelta(days=4)
+    return monday, friday
+
+
+def get_week_trading_days(d: datetime.date) -> List[datetime.date]:
+    """Return all trading days (Monday to Friday) of the week containing date d."""
+    monday = d - datetime.timedelta(days=d.weekday())
+    return [monday + datetime.timedelta(days=i) for i in range(5)]
+
+
 def get_next_trading_day(d: datetime.date) -> datetime.date:
     """Get next weekday date (skips Saturday/Sunday)."""
     next_day = d + datetime.timedelta(days=1)
@@ -261,41 +286,68 @@ def get_next_trading_day(d: datetime.date) -> datetime.date:
     return next_day
 
 
-def check_macro_event_filter(today: datetime.date) -> Tuple[bool, Optional[str]]:
-    """Check if today or the next trading day has a major macro event (FOMC, CPI, NFP, US Elections, PMI).
+def check_macro_event_filter(
+    today: Optional[datetime.date | datetime.datetime] = None,
+) -> Tuple[bool, Optional[str]]:
+    """Check if the week containing today or the next trading day has a major macro event.
 
-    Rule: Do not trade on the evening of the event (today), OR the evening before (eve of event).
+    Strict weekly rule: If any day in the trading week (Monday through Friday) has a major macro event
+    (FOMC, CPI, NFP, US Elections, ISM PMI), trading is blocked for the ENTIRE week.
+    Additionally, if the next trading day (e.g. across a weekend) has an event, trading is blocked on the eve of the event.
     """
+    d = normalize_date(today)
     events = get_all_macro_events()
 
-    # 1. Event is Today
-    if today in events:
-        event_name = events[today]
-        return True, f"Macro event TODAY ({event_name}). Trading blocked on event day."
+    monday, friday = get_week_bounds(d)
+    week_days = [monday + datetime.timedelta(days=i) for i in range(7)]
 
-    # 2. Event is Next Trading Day (Eve of event)
-    next_td = get_next_trading_day(today)
+    # 1. Check if any day in the current week has a macro event
+    events_this_week = []
+    for day in week_days:
+        if day in events:
+            events_this_week.append(f"{events[day]} on {day}")
+
+    if events_this_week:
+        events_str = "; ".join(events_this_week)
+        return (
+            True,
+            f"Macro event ({events_str}) occurs this week ({monday} to {friday}). "
+            f"Trading blocked for the entire week.",
+        )
+
+    # 2. Check if next trading day (e.g. Monday following Friday trade) has a macro event
+    next_td = get_next_trading_day(d)
     if next_td in events:
         event_name = events[next_td]
         return (
             True,
-            f"Macro event TOMORROW / next trading day ({event_name} on {next_td}). "
-            "Trading blocked on eve of event.",
+            f"Macro event ({event_name} on {next_td}) occurs on next trading day. "
+            f"Trading blocked on eve of event.",
         )
 
     return False, None
 
 
 def check_tech_earnings_filter(
-    today: datetime.date,
+    today: Optional[datetime.date | datetime.datetime] = None,
     monitored_symbols: Optional[List[str]] = None,
 ) -> Tuple[bool, Optional[str]]:
-    """Check if major tech stocks have pre-market earnings next day or after-hours today.
+    """Check if major tech stocks report earnings anytime during the current trading week or next trading day.
 
-    Uses the Nasdaq Earnings Calendar API with a yfinance fallback.
+    Strict weekly rule: If any monitored mega-cap tech stock reports earnings during the current
+    week (Monday through Friday), trading is blocked for the ENTIRE week.
+    Additionally, if the next trading day (e.g. next Monday) has earnings, trading is blocked on the eve.
     """
+    d = normalize_date(today)
     symbols = set(monitored_symbols or DEFAULT_MONITORED_TECH)
-    next_td = get_next_trading_day(today)
+    monday, friday = get_week_bounds(d)
+    week_trading_days = get_week_trading_days(d)
+    next_td = get_next_trading_day(d)
+
+    # Days to inspect: all trading days of this week, plus next trading day if outside this week
+    target_dates = list(week_trading_days)
+    if next_td not in target_dates:
+        target_dates.append(next_td)
 
     headers = {
         "User-Agent": (
@@ -316,36 +368,41 @@ def check_tech_earnings_filter(
             logger.debug("Nasdaq API query failed for %s: %s", target_date, e)
         return []
 
-    # 1. Check Tomorrow / Next Trading Day Pre-Market Earnings
-    rows_next = query_nasdaq(next_td)
-    for row in rows_next:
-        sym = row.get("symbol")
-        time_str = (row.get("time") or "").lower()
-        if sym in symbols:
-            # If pre-market or time not specified (assume conservative blocking)
-            if "pre-market" in time_str or "time-not-supplied" in time_str or not time_str:
-                name = row.get("name") or sym
-                return (
-                    True,
-                    f"Major tech stock {sym} ({name}) reports earnings TOMORROW pre-market "
-                    f"({next_td}). Trading blocked.",
-                )
+    # Parallel fetch across all target dates
+    nasdaq_results: Dict[datetime.date, List[dict]] = {}
+    with ThreadPoolExecutor(max_workers=min(len(target_dates), 6)) as executor:
+        future_to_date = {executor.submit(query_nasdaq, dt): dt for dt in target_dates}
+        for future in future_to_date:
+            dt = future_to_date[future]
+            try:
+                nasdaq_results[dt] = future.result()
+            except Exception as e:
+                logger.debug("Error retrieving Nasdaq earnings for %s: %s", dt, e)
+                nasdaq_results[dt] = []
 
-    # 2. Check Today After-Hours Earnings
-    rows_today = query_nasdaq(today)
-    for row in rows_today:
-        sym = row.get("symbol")
-        time_str = (row.get("time") or "").lower()
-        if sym in symbols:
-            if "after-hours" in time_str or "time-not-supplied" in time_str or not time_str:
+    # Check for earnings matches in Nasdaq results
+    for dt in target_dates:
+        rows = nasdaq_results.get(dt, [])
+        for row in rows:
+            sym = row.get("symbol")
+            if sym in symbols:
                 name = row.get("name") or sym
-                return (
-                    True,
-                    f"Major tech stock {sym} ({name}) reports earnings TODAY after-hours "
-                    f"({today}). Trading blocked.",
-                )
+                time_str = (row.get("time") or "").lower()
+                time_label = f" ({time_str})" if time_str else ""
+                if dt in week_trading_days:
+                    return (
+                        True,
+                        f"Major tech stock {sym} ({name}) reports earnings this week on {dt}{time_label} "
+                        f"(week of {monday} to {friday}). Trading blocked for the entire week.",
+                    )
+                else:
+                    return (
+                        True,
+                        f"Major tech stock {sym} ({name}) reports earnings on next trading day {dt}{time_label}. "
+                        f"Trading blocked on eve of earnings.",
+                    )
 
-    # 3. Fallback: yfinance calendar check
+    # Fallback: yfinance calendar check
     try:
         import yfinance as yf
 
@@ -358,11 +415,18 @@ def check_tech_earnings_filter(
                     if isinstance(e_dates, list):
                         for ed in e_dates:
                             ed_date = ed if isinstance(ed, datetime.date) else ed.date()
-                            if ed_date in (today, next_td):
+                            if ed_date in week_trading_days:
                                 return (
                                     True,
-                                    f"Major tech stock {sym} reports earnings on {ed_date} "
-                                    "(detected via yfinance). Trading blocked.",
+                                    f"Major tech stock {sym} reports earnings this week on {ed_date} "
+                                    f"(week of {monday} to {friday}) (detected via yfinance). "
+                                    f"Trading blocked for the entire week.",
+                                )
+                            elif ed_date == next_td:
+                                return (
+                                    True,
+                                    f"Major tech stock {sym} reports earnings on next trading day {ed_date} "
+                                    f"(detected via yfinance). Trading blocked on eve of earnings.",
                                 )
             except Exception:
                 pass
@@ -373,13 +437,18 @@ def check_tech_earnings_filter(
 
 
 def should_skip_trade(
-    today: Optional[datetime.date] = None,
+    today: Optional[datetime.date | datetime.datetime] = None,
     monitored_symbols: Optional[List[str]] = None,
 ) -> Tuple[bool, Optional[str]]:
-    """Master filter: returns (True, reason) if trading should be aborted due to events."""
-    d = today or datetime.datetime.now(EASTERN_TZ).date()
+    """Master filter: returns (True, reason) if trading should be aborted due to events.
 
-    # 1. Macro Economic Events Check (FOMC, CPI, NFP)
+    Strict weekly rule: If any day in the current trading week has a major macro economic
+    event (FOMC, CPI, NFP, US Elections, ISM PMI) or Mega-Cap Tech earnings (AAPL, MSFT, NVDA,
+    AMZN, GOOGL, GOOG, META, TSLA), trading is blocked for the ENTIRE week.
+    """
+    d = normalize_date(today)
+
+    # 1. Macro Economic Events Check (FOMC, CPI, NFP, Elections, PMI)
     skip_macro, reason_macro = check_macro_event_filter(d)
     if skip_macro:
         return True, reason_macro
@@ -399,5 +468,5 @@ if __name__ == "__main__":
     if skip:
         print(f"🚫 TRADING BLOCKED: {reason}")
     else:
-        print("✅ No blocking macro events or major tech earnings detected. Trading allowed.")
+        print("✅ No blocking macro events or major tech earnings detected this week. Trading allowed.")
 

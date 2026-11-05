@@ -58,12 +58,12 @@ Create a `config.json` file in the project root (see `config.json.example`):
 
 ### 1. Macro Event & Tech Earnings Blackout Filter
 The bot automatically skips trading (`event_filter.py`) on high-volatility event windows to avoid catastrophic gamma spikes:
-- **Macro Economic Events (FOMC, CPI, NFP)**:
-  - **Eve of Event**: No trade on the evening preceding FOMC rate decisions, CPI releases, or Non-Farm Payrolls reports.
-  - **Day of Event**: No trade on the evening of the event day.
-- **Major Tech Earnings (Magnificent 7: AAPL, MSFT, NVDA, AMZN, GOOGL, META, TSLA)**:
-  - **Pre-Market Earnings**: No trade if a mega-cap tech stock reports tomorrow before market open.
-  - **After-Hours Earnings**: No trade if a mega-cap tech stock reports today after the close.
+- **Macro Economic Events (FOMC, CPI, NFP, US Elections, ISM PMI)**:
+  - **Full-Week Blackout**: If any major macro announcement occurs on any day of the trading week (Monday through Friday), trading is completely blocked for that entire week.
+  - **Eve of Event**: If the next trading day (e.g. across a weekend) has an event, trading is blocked on the eve.
+- **Major Tech Earnings (Magnificent 7: AAPL, MSFT, NVDA, AMZN, GOOGL, GOOG, META, TSLA)**:
+  - **Full-Week Blackout**: If any monitored mega-cap tech company reports earnings anytime during the trading week (Monday through Friday), trading is completely blocked for that entire week.
+  - **Eve of Earnings**: If the next trading day has tech earnings, trading is blocked on the eve.
 
 ### 2. Model Price vs Market Price Consistency & Adverse Selection Protection
 To prevent trading during extreme volatility dislocations or selling mispriced options into severe tail-risk events:
