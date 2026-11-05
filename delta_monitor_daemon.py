@@ -24,7 +24,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import pytz
-from ib_async import IB, ComboLeg, Contract, LimitOrder, MarketOrder, Option, Trade
+from ib_async import IB, ComboLeg, Contract, Index, LimitOrder, MarketOrder, Option, Trade
 
 import config_manager
 import market_schedule
@@ -132,28 +132,190 @@ class DeltaMonitorDaemon:
             self.disconnect()
             self.connect()
 
-    def get_active_0dte_trade(self) -> Optional[ActiveTradeRecord]:
-        """Load active position and verify it is a 0DTE contract expiring today."""
-        trade = self.pm.load_active_trade()
-        if not trade:
-            return None
+    def get_active_0dte_trades(self) -> List[ActiveTradeRecord]:
+        """Discover live 0DTE short option positions directly from IBKR.
 
-        if trade.status != "OPEN":
-            return None
+        Queries order_ib.positions() to inspect actual holdings. If positions exist,
+        they are matched to local trade records or dynamically synthesized and persisted.
+        """
+        self.ensure_connected()
 
         now_ny = get_ny_now()
         today_str = now_ny.strftime("%Y%m%d")
 
-        # Expiry format is YYYYMMDD
-        if trade.expiry != today_str:
-            logger.debug(
-                "Trade in record expires on %s, not today (%s). Not 0DTE yet.",
-                trade.expiry,
-                today_str,
-            )
-            return None
+        try:
+            positions = self.order_ib.positions()
+            if not isinstance(positions, (list, tuple)):
+                positions = []
+        except Exception as e:
+            logger.error("Failed to query live positions from order_ib: %s", e)
+            positions = []
 
-        return trade
+        target_cfg = self.config.real if self.use_real_account else self.config.paper
+        logger.info(
+            "Retrieved %d position(s) from %s account (port %d).",
+            len(positions),
+            "Real" if self.use_real_account else "Paper",
+            target_cfg.port,
+        )
+
+        if len(positions) == 0:
+            logger.info(
+                "💡 Tip: 0 positions found in %s account. If your active trade is held in the %s account, "
+                "ensure the daemon is running with '%s'.",
+                "Real" if self.use_real_account else "Paper",
+                "Paper" if self.use_real_account else "Real",
+                "--paper" if self.use_real_account else "--real",
+            )
+
+        # Filter option positions for SPX / XSP expiring today
+        matching_positions = []
+        for p in positions:
+            c = getattr(p, "contract", None)
+            if not c:
+                continue
+            sec_type = getattr(c, "secType", "")
+            sym = getattr(c, "symbol", "")
+            pos_qty = getattr(p, "position", 0)
+
+            if sec_type == "OPT" and sym in ("SPX", "XSP") and pos_qty != 0:
+                raw_exp = str(getattr(c, "lastTradeDateOrContractMonth", "") or "")
+                exp_clean = raw_exp.replace("-", "").strip()
+                if exp_clean == today_str:
+                    matching_positions.append(p)
+
+        local_trade = self.pm.load_active_trade()
+
+        if not matching_positions:
+            # Fallback to local record if order_ib has no positions (e.g. testing or disconnected)
+            if local_trade and local_trade.status == "OPEN" and local_trade.expiry == today_str:
+                # If order_ib is connected and returned other positions explicitly, this trade was closed in IBKR
+                if self.order_ib.isConnected() and isinstance(positions, list) and len(positions) > 0:
+                    logger.info(
+                        "Local record for %s %s was marked OPEN, but 0 matching 0DTE positions remain in IBKR. Marking CLOSED.",
+                        local_trade.symbol,
+                        local_trade.strategy,
+                    )
+                    self.pm.mark_trade_closed(close_price=0.0, reason="EXPIRED_OR_CLOSED_EXTERNALLY")
+                    return []
+                # Otherwise, allow local_trade as fallback (useful for offline mock tests)
+                return [local_trade]
+            return []
+
+        # Group matching positions by (symbol, expiry)
+        by_group: Dict[Tuple[str, str], List[Any]] = {}
+        for p in matching_positions:
+            c = p.contract
+            key = (c.symbol, str(getattr(c, "lastTradeDateOrContractMonth", "")).replace("-", "").strip())
+            by_group.setdefault(key, []).append(p)
+
+        active_trades: List[ActiveTradeRecord] = []
+
+        for (sym, exp_str), group in by_group.items():
+            short_positions = [p for p in group if p.position < 0]
+            long_positions = [p for p in group if p.position > 0]
+
+            if not short_positions:
+                logger.debug("Group %s %s has %d long positions but no short legs. Skipping.", sym, exp_str, len(long_positions))
+                continue
+
+            for sp in short_positions:
+                sc = sp.contract
+                short_strike = float(sc.strike)
+                short_right = sc.right
+                short_qty = abs(int(sp.position))
+                short_tclass = getattr(sc, "tradingClass", None) or ("SPXW" if sym == "SPX" else "XSP")
+
+                # Try to pair with a matching long leg
+                matched_long = None
+                if short_right == "P":
+                    candidate_longs = [
+                        lp for lp in long_positions
+                        if lp.contract.right == "P" and float(lp.contract.strike) < short_strike
+                    ]
+                    if candidate_longs:
+                        candidate_longs.sort(key=lambda x: float(x.contract.strike), reverse=True)
+                        matched_long = candidate_longs[0]
+                elif short_right == "C":
+                    candidate_longs = [
+                        lp for lp in long_positions
+                        if lp.contract.right == "C" and float(lp.contract.strike) > short_strike
+                    ]
+                    if candidate_longs:
+                        candidate_longs.sort(key=lambda x: float(x.contract.strike))
+                        matched_long = candidate_longs[0]
+
+                # Check if local record matches this short leg
+                if (
+                    local_trade
+                    and local_trade.status == "OPEN"
+                    and local_trade.symbol == sym
+                    and local_trade.expiry == exp_str
+                    and local_trade.short_leg
+                    and local_trade.short_leg.strike == short_strike
+                    and local_trade.short_leg.option_type == short_right
+                ):
+                    trade_to_use = local_trade
+                    trade_to_use.quantity = short_qty
+                else:
+                    detected_strategy = "bull" if short_right == "P" else "bear"
+                    if matched_long is None:
+                        detected_strategy = f"single_short_{short_right.lower()}ut" if short_right == "P" else f"single_short_{short_right.lower()}all"
+
+                    long_leg_rec = None
+                    if matched_long:
+                        lc = matched_long.contract
+                        long_leg_rec = OptionLegRecord(
+                            strike=float(lc.strike),
+                            option_type=lc.right,
+                            expiry=exp_str,
+                            action="BUY",
+                            con_id=getattr(lc, "conId", None),
+                            trading_class=getattr(lc, "tradingClass", None) or short_tclass,
+                        )
+
+                    short_leg_rec = OptionLegRecord(
+                        strike=short_strike,
+                        option_type=short_right,
+                        expiry=exp_str,
+                        action="SELL",
+                        con_id=getattr(sc, "conId", None),
+                        trading_class=short_tclass,
+                    )
+
+                    fill_price = abs(float(sp.avgCost / 100.0)) if getattr(sp, "avgCost", 0) else 0.0
+
+                    trade_to_use = ActiveTradeRecord(
+                        symbol=sym,
+                        trading_class=short_tclass,
+                        strategy=detected_strategy,
+                        opened_at=now_ny.isoformat(),
+                        expiry=exp_str,
+                        quantity=short_qty,
+                        fill_price=fill_price,
+                        status="OPEN",
+                        short_leg=short_leg_rec,
+                        long_leg=long_leg_rec,
+                    )
+                    self.pm.save_active_trade(trade_to_use)
+                    logger.info(
+                        "✅ Discovered live 0DTE position from IBKR: %s %s %.1f%s (Qty: %d, Expiry: %s). Synced to local records.",
+                        sym,
+                        detected_strategy,
+                        short_strike,
+                        short_right,
+                        short_qty,
+                        exp_str,
+                    )
+
+                active_trades.append(trade_to_use)
+
+        return active_trades
+
+    def get_active_0dte_trade(self) -> Optional[ActiveTradeRecord]:
+        """Load active position and verify it is a 0DTE contract expiring today."""
+        trades = self.get_active_0dte_trades()
+        return trades[0] if trades else None
 
     def inspect_short_leg_delta(
         self,
@@ -224,6 +386,16 @@ class DeltaMonitorDaemon:
             if ticker.modelGreeks and getattr(ticker.modelGreeks, "undPrice", None):
                 spot = float(ticker.modelGreeks.undPrice)
 
+            if spot <= 0:
+                # Query index contract directly as spot fallback
+                try:
+                    idx_contract = Index(trade.symbol, "CBOE")
+                    self.data_ib.qualifyContracts(idx_contract)
+                    idx_ticker = self.data_ib.reqTickers(idx_contract)[0]
+                    spot = float(idx_ticker.marketPrice() or idx_ticker.last or idx_ticker.close or 0.0)
+                except Exception as ex:
+                    logger.debug("Failed to fetch spot from index: %s", ex)
+
             # Mid price
             bid = ticker.bid if ticker.bid and not math.isnan(ticker.bid) else 0.0
             ask = ticker.ask if ticker.ask and not math.isnan(ticker.ask) else 0.0
@@ -232,10 +404,11 @@ class DeltaMonitorDaemon:
             # Fallback delta estimation via Black-Scholes if IBKR modelGreeks empty
             if delta is None and spot > 0:
                 logger.warning(
-                    "IBKR modelGreeks missing for %s %.1f%s. Estimating via Black-Scholes...",
+                    "IBKR modelGreeks missing for %s %.1f%s. Estimating via Black-Scholes (Spot=%.2f)...",
                     trade.symbol,
                     leg.strike,
                     leg.option_type,
+                    spot,
                 )
                 try:
                     delta = calculate_bs_delta(
@@ -259,7 +432,7 @@ class DeltaMonitorDaemon:
         trade: ActiveTradeRecord,
         breached_leg: OptionLegRecord,
     ) -> Tuple[Contract, int, float]:
-        """Construct the reverse BAG combo contract to buy back the spread.
+        """Construct the closing contract (either 2-leg BAG combo or single Option) to buy back position.
 
         Returns (combo_contract, quantity, estimated_initial_mid)
         """
@@ -272,27 +445,26 @@ class DeltaMonitorDaemon:
         if trade.strategy == "iron_condor" and trade.iron_condor_legs:
             if short_leg.option_type == "P":
                 bp = trade.iron_condor_legs.get("buy_put")
-                long_leg = OptionLegRecord(
-                    strike=bp["strike"],
-                    option_type="P",
-                    expiry=bp["expiry"],
-                    action="BUY",
-                    trading_class=trade.trading_class,
-                )
+                if bp:
+                    long_leg = OptionLegRecord(
+                        strike=bp["strike"],
+                        option_type="P",
+                        expiry=bp["expiry"],
+                        action="BUY",
+                        trading_class=trade.trading_class,
+                    )
             else:
                 bc = trade.iron_condor_legs.get("buy_call")
-                long_leg = OptionLegRecord(
-                    strike=bc["strike"],
-                    option_type="C",
-                    expiry=bc["expiry"],
-                    action="BUY",
-                    trading_class=trade.trading_class,
-                )
+                if bc:
+                    long_leg = OptionLegRecord(
+                        strike=bc["strike"],
+                        option_type="C",
+                        expiry=bc["expiry"],
+                        action="BUY",
+                        trading_class=trade.trading_class,
+                    )
         else:
             long_leg = trade.long_leg
-
-        if not long_leg:
-            raise ValueError("Cannot find corresponding long leg to close spread safely.")
 
         short_contract = Option(
             trade.symbol,
@@ -302,47 +474,57 @@ class DeltaMonitorDaemon:
             "SMART",
             tradingClass=short_leg.trading_class or trade.trading_class,
         )
-        long_contract = Option(
-            trade.symbol,
-            long_leg.expiry,
-            long_leg.strike,
-            long_leg.option_type,
-            "SMART",
-            tradingClass=long_leg.trading_class or trade.trading_class,
-        )
+        self.order_ib.qualifyContracts(short_contract)
 
-        self.order_ib.qualifyContracts(short_contract, long_contract)
-
-        # To close: BUY back short leg, SELL long leg
-        combo = Contract(
-            symbol=trade.symbol,
-            secType="BAG",
-            exchange="CBOE",
-            currency="USD",
-            tradingClass=trade.trading_class,
-            comboLegs=[
-                ComboLeg(conId=short_contract.conId, ratio=1, action="BUY", exchange="CBOE"),
-                ComboLeg(conId=long_contract.conId, ratio=1, action="SELL", exchange="CBOE"),
-            ],
-        )
-
-        # Estimate mid price
+        # Estimate short leg mid price
         self.data_ib.reqMarketDataType(1)
-        tickers = self.data_ib.reqTickers(short_contract, long_contract)
+        s_tickers = self.data_ib.reqTickers(short_contract)
         short_mid = 0.0
-        long_mid = 0.0
-        if len(tickers) == 2:
-            s_t, l_t = tickers[0], tickers[1]
+        if s_tickers:
+            s_t = s_tickers[0]
             s_b = s_t.bid if s_t.bid and not math.isnan(s_t.bid) else 0.0
             s_a = s_t.ask if s_t.ask and not math.isnan(s_t.ask) else 0.0
             short_mid = (s_b + s_a) / 2.0 if s_b > 0 and s_a > 0 else (s_t.close or s_t.last or 0.0)
 
-            l_b = l_t.bid if l_t.bid and not math.isnan(l_t.bid) else 0.0
-            l_a = l_t.ask if l_t.ask and not math.isnan(l_t.ask) else 0.0
-            long_mid = (l_b + l_a) / 2.0 if l_b > 0 and l_a > 0 else (l_t.close or l_t.last or 0.0)
+        # Case 1: Spread with matching long leg -> 2-leg BAG Combo
+        if long_leg is not None:
+            long_contract = Option(
+                trade.symbol,
+                long_leg.expiry,
+                long_leg.strike,
+                long_leg.option_type,
+                "SMART",
+                tradingClass=long_leg.trading_class or trade.trading_class,
+            )
+            self.order_ib.qualifyContracts(long_contract)
 
-        estimated_mid = max(0.05, round(short_mid - long_mid, 2))
-        return combo, trade.quantity, estimated_mid
+            combo = Contract(
+                symbol=trade.symbol,
+                secType="BAG",
+                exchange="CBOE",
+                currency="USD",
+                tradingClass=trade.trading_class,
+                comboLegs=[
+                    ComboLeg(conId=short_contract.conId, ratio=1, action="BUY", exchange="CBOE"),
+                    ComboLeg(conId=long_contract.conId, ratio=1, action="SELL", exchange="CBOE"),
+                ],
+            )
+
+            l_tickers = self.data_ib.reqTickers(long_contract)
+            long_mid = 0.0
+            if l_tickers:
+                l_t = l_tickers[0]
+                l_b = l_t.bid if l_t.bid and not math.isnan(l_t.bid) else 0.0
+                l_a = l_t.ask if l_t.ask and not math.isnan(l_t.ask) else 0.0
+                long_mid = (l_b + l_a) / 2.0 if l_b > 0 and l_a > 0 else (l_t.close or l_t.last or 0.0)
+
+            estimated_mid = max(0.05, round(short_mid - long_mid, 2))
+            return combo, trade.quantity, estimated_mid
+
+        # Case 2: Single short option leg -> Direct Option contract (BUY action)
+        # Note: Single-leg BAG orders are silently dropped by IBKR, so must use Option contract directly!
+        estimated_mid = max(0.05, round(short_mid, 2))
+        return short_contract, trade.quantity, estimated_mid
 
     def execute_emergency_close(
         self,
@@ -516,58 +698,61 @@ class DeltaMonitorDaemon:
         self.notifier.send_message(fill_msg)
         return active_trade_obj
 
-    def scan_once(self) -> Dict[str, Any]:
+    def scan_once(self, force: bool = False) -> Dict[str, Any]:
         """Perform a single scan of the 0DTE short leg delta."""
         now_ny = get_ny_now()
-        is_in_win, reason = market_schedule.is_monitoring_window(now_ny)
-        if not is_in_win:
-            logger.info("Outside monitoring window: %s", reason)
-            return {"status": "outside_window", "reason": reason}
+        if not force:
+            is_in_win, reason = market_schedule.is_monitoring_window(now_ny)
+            if not is_in_win:
+                logger.info("Outside monitoring window: %s", reason)
+                return {"status": "outside_window", "reason": reason}
 
-        trade = self.get_active_0dte_trade()
-        if not trade:
-            logger.info("No active 0DTE position found in records. Scanning again next cycle.")
+        trades = self.get_active_0dte_trades()
+        if not trades:
+            logger.info("No active 0DTE position found in records or live IBKR account. Scanning again next cycle.")
             return {"status": "no_active_0dte_trade"}
 
-        logger.info(
-            "Found active 0DTE trade: %s %s (Expiry: %s, Qty: %d). Inspecting Greeks...",
-            trade.symbol,
-            trade.strategy,
-            trade.expiry,
-            trade.quantity,
-        )
-
-        leg_results = self.inspect_short_leg_delta(trade)
-        if not leg_results:
-            logger.warning("Could not evaluate short legs for trade.")
-            return {"status": "greeks_unavailable"}
-
-        for leg, delta, mid, spot in leg_results:
+        overall_status = "healthy"
+        for trade in trades:
             logger.info(
-                "Short Leg: %s %.1f%s | Live Delta: %.4f | Mid: $%.2f | Underlying Spot: $%.2f",
+                "Found active 0DTE trade: %s %s (Expiry: %s, Qty: %d). Inspecting Greeks...",
                 trade.symbol,
-                leg.strike,
-                leg.option_type,
-                delta,
-                mid,
-                spot,
+                trade.strategy,
+                trade.expiry,
+                trade.quantity,
             )
 
-            # Check breach condition: |delta| > 0.65
-            if abs(delta) > self.delta_threshold:
-                logger.warning(
-                    "❌ BREACH DETECTED: %s %.1f%s Delta %.4f exceeds threshold |Δ| > %.2f!",
+            leg_results = self.inspect_short_leg_delta(trade)
+            if not leg_results:
+                logger.warning("Could not evaluate short legs for trade.")
+                continue
+
+            for leg, delta, mid, spot in leg_results:
+                logger.info(
+                    "Short Leg: %s %.1f%s | Live Delta: %.4f | Mid: $%.2f | Underlying Spot: $%.2f",
                     trade.symbol,
                     leg.strike,
                     leg.option_type,
                     delta,
-                    self.delta_threshold,
+                    mid,
+                    spot,
                 )
-                self.execute_emergency_close(trade, leg, delta, spot)
-                return {"status": "breached_and_closed", "leg": leg.strike, "delta": delta}
+
+                # Check breach condition: |delta| > self.delta_threshold
+                if abs(delta) > self.delta_threshold:
+                    logger.warning(
+                        "❌ BREACH DETECTED: %s %.1f%s Delta %.4f exceeds threshold |Δ| > %.2f!",
+                        trade.symbol,
+                        leg.strike,
+                        leg.option_type,
+                        delta,
+                        self.delta_threshold,
+                    )
+                    self.execute_emergency_close(trade, leg, delta, spot)
+                    return {"status": "breached_and_closed", "leg": leg.strike, "delta": delta}
 
         logger.info("All short leg deltas within safety threshold (|Δ| <= %.2f).", self.delta_threshold)
-        return {"status": "healthy"}
+        return {"status": overall_status}
 
     def run_daemon(self) -> None:
         """Run continuous daemon loop scanning every scan_interval seconds."""
@@ -612,6 +797,7 @@ def main():
     parser.add_argument("--threshold", type=float, default=0.65, help="Delta breach threshold (default 0.65)")
     parser.add_argument("--interval", type=int, default=300, help="Scan interval in seconds (default 300)")
     parser.add_argument("--check-once", action="store_true", help="Perform a single check and exit")
+    parser.add_argument("--force", action="store_true", help="Bypass 10:30 ET window check and scan immediately")
     parser.add_argument("--record-file", type=str, default=None, help="Custom path to active_position.json")
     parser.add_argument("--config", type=str, default=None, help="Custom path to config.json")
     args = parser.parse_args()
@@ -627,7 +813,7 @@ def main():
     if args.check_once:
         try:
             daemon.connect()
-            daemon.scan_once()
+            daemon.scan_once(force=args.force)
         finally:
             daemon.disconnect()
     else:
