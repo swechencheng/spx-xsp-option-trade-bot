@@ -253,49 +253,6 @@ def get_all_macro_events() -> Dict[datetime.date, str]:
     return events
 
 
-# Event completion times (Eastern Time)
-# CPI: 08:30 ET release
-# NFP: 08:30 ET release
-# PMI: 10:00 ET release
-# FOMC: 14:00 ET rate decision + 14:30 ET press conference (completed by 15:00 ET)
-# Elections: results continue overnight (not completed during trading hours)
-EVENT_COMPLETION_TIMES: Dict[str, datetime.time] = {
-    "cpi": datetime.time(8, 30),
-    "nfp": datetime.time(8, 30),
-    "non-farm": datetime.time(8, 30),
-    "pmi": datetime.time(10, 0),
-    "fomc": datetime.time(15, 0),
-    "election": datetime.time(23, 59),
-    "presidential": datetime.time(23, 59),
-    "midterm": datetime.time(23, 59),
-}
-
-
-def get_event_completion_time(event_desc: str) -> datetime.time:
-    """Determine standard completion time for a given macro event in Eastern Time."""
-    desc_lower = event_desc.lower()
-    for key, t in EVENT_COMPLETION_TIMES.items():
-        if key in desc_lower:
-            return t
-    return datetime.time(16, 0)
-
-
-def is_event_completed(
-    event_desc: str,
-    event_date: datetime.date,
-    current_dt: datetime.datetime,
-) -> bool:
-    """Check if an event scheduled for event_date has already occurred relative to current_dt."""
-    cur_d = current_dt.date()
-    if cur_d > event_date:
-        return True
-    if cur_d < event_date:
-        return False
-    # Same date: check if current time is past event completion time
-    comp_time = get_event_completion_time(event_desc)
-    return current_dt.time() >= comp_time
-
-
 def get_next_trading_day(d: datetime.date) -> datetime.date:
     """Get next weekday date (skips Saturday/Sunday)."""
     next_day = d + datetime.timedelta(days=1)
@@ -304,57 +261,19 @@ def get_next_trading_day(d: datetime.date) -> datetime.date:
     return next_day
 
 
-def check_macro_event_filter(
-    current_dt: Optional[datetime.datetime | datetime.date] = None,
-    current_time: Optional[datetime.time] = None,
-) -> Tuple[bool, Optional[str]]:
-    """Check if macro events block trading based on occurrence and holding window timing.
+def check_macro_event_filter(today: datetime.date) -> Tuple[bool, Optional[str]]:
+    """Check if today or the next trading day has a major macro event (FOMC, CPI, NFP, US Elections, PMI).
 
-    Rules:
-    1. If a macro event is scheduled for TODAY:
-       - If it has ALREADY occurred / completed (e.g. CPI/NFP released at 8:30 AM, PMI at 10:00 AM, FOMC completed by 15:00 ET):
-         It does NOT block trading by itself!
-       - If it is PENDING (has not occurred yet today, e.g. checked at 13:00 ET before 14:00 FOMC, or Election Day results pending tonight):
-         Trading is BLOCKED.
-    2. If a macro event is scheduled for TOMORROW / next trading day (eve of event):
-       - Since 1DTE positions hold overnight until tomorrow close, any event tomorrow falls into the holding period:
-         Trading is BLOCKED.
+    Rule: Do not trade on the evening of the event (today), OR the evening before (eve of event).
     """
-    if current_dt is None:
-        dt = datetime.datetime.now(EASTERN_TZ)
-    elif isinstance(current_dt, datetime.datetime):
-        if current_dt.tzinfo is None:
-            dt = EASTERN_TZ.localize(current_dt)
-        else:
-            dt = current_dt.astimezone(EASTERN_TZ)
-    elif isinstance(current_dt, datetime.date):
-        t = current_time or datetime.time(15, 52)
-        dt = EASTERN_TZ.localize(datetime.datetime.combine(current_dt, t))
-    else:
-        dt = datetime.datetime.now(EASTERN_TZ)
-
-    today = dt.date()
     events = get_all_macro_events()
 
-    # 1. Check if an event scheduled for TODAY is still pending
+    # 1. Event is Today
     if today in events:
         event_name = events[today]
-        if not is_event_completed(event_name, today, dt):
-            comp_time = get_event_completion_time(event_name)
-            return (
-                True,
-                f"Macro event TODAY has NOT completed yet ({event_name}, completion at ~{comp_time.strftime('%H:%M')} ET). "
-                "Trading blocked.",
-            )
-        else:
-            logger.info(
-                "Macro event TODAY (%s) has already occurred / concluded by %s ET. "
-                "Proceeding to check subsequent events.",
-                event_name,
-                dt.strftime("%H:%M"),
-            )
+        return True, f"Macro event TODAY ({event_name}). Trading blocked on event day."
 
-    # 2. Check if next trading day has a macro event (Eve of event)
+    # 2. Event is Next Trading Day (Eve of event)
     next_td = get_next_trading_day(today)
     if next_td in events:
         event_name = events[next_td]
@@ -368,29 +287,13 @@ def check_macro_event_filter(
 
 
 def check_tech_earnings_filter(
-    current_dt: Optional[datetime.datetime | datetime.date] = None,
+    today: datetime.date,
     monitored_symbols: Optional[List[str]] = None,
-    current_time: Optional[datetime.time] = None,
 ) -> Tuple[bool, Optional[str]]:
-    """Check if major tech stocks have pending earnings (today after-hours or tomorrow pre-market/intraday).
+    """Check if major tech stocks have pre-market earnings next day or after-hours today.
 
-    Already completed earnings (e.g. today pre-market BMO, when checked after market open) do NOT block trading.
+    Uses the Nasdaq Earnings Calendar API with a yfinance fallback.
     """
-    if current_dt is None:
-        dt = datetime.datetime.now(EASTERN_TZ)
-    elif isinstance(current_dt, datetime.datetime):
-        if current_dt.tzinfo is None:
-            dt = EASTERN_TZ.localize(current_dt)
-        else:
-            dt = current_dt.astimezone(EASTERN_TZ)
-    elif isinstance(current_dt, datetime.date):
-        t = current_time or datetime.time(15, 52)
-        dt = EASTERN_TZ.localize(datetime.datetime.combine(current_dt, t))
-    else:
-        dt = datetime.datetime.now(EASTERN_TZ)
-
-    today = dt.date()
-    cur_time = dt.time()
     symbols = set(monitored_symbols or DEFAULT_MONITORED_TECH)
     next_td = get_next_trading_day(today)
 
@@ -413,56 +316,33 @@ def check_tech_earnings_filter(
             logger.debug("Nasdaq API query failed for %s: %s", target_date, e)
         return []
 
-    # 1. Check Tomorrow / Next Trading Day Earnings (pre-market, intraday, or after-hours)
+    # 1. Check Tomorrow / Next Trading Day Pre-Market Earnings
     rows_next = query_nasdaq(next_td)
     for row in rows_next:
         sym = row.get("symbol")
         time_str = (row.get("time") or "").lower()
         if sym in symbols:
-            name = row.get("name") or sym
-            return (
-                True,
-                f"Major tech stock {sym} ({name}) reports earnings TOMORROW ({next_td}, {time_str or 'time unconfirmed'}). "
-                "Trading blocked.",
-            )
+            # If pre-market or time not specified (assume conservative blocking)
+            if "pre-market" in time_str or "time-not-supplied" in time_str or not time_str:
+                name = row.get("name") or sym
+                return (
+                    True,
+                    f"Major tech stock {sym} ({name}) reports earnings TOMORROW pre-market "
+                    f"({next_td}). Trading blocked.",
+                )
 
-    # 2. Check Today Earnings
+    # 2. Check Today After-Hours Earnings
     rows_today = query_nasdaq(today)
     for row in rows_today:
         sym = row.get("symbol")
         time_str = (row.get("time") or "").lower()
         if sym in symbols:
-            # If after-hours (AMC), it has NOT happened yet at 15:52 ET!
-            if "after-hours" in time_str:
+            if "after-hours" in time_str or "time-not-supplied" in time_str or not time_str:
                 name = row.get("name") or sym
                 return (
                     True,
-                    f"Major tech stock {sym} ({name}) reports earnings TODAY after-hours ({today}). "
-                    "Trading blocked.",
-                )
-            # If pre-market (BMO), check if already occurred
-            elif "pre-market" in time_str:
-                # If before 09:30 AM, market has not opened to absorb it yet
-                if cur_time < datetime.time(9, 30):
-                    name = row.get("name") or sym
-                    return (
-                        True,
-                        f"Major tech stock {sym} ({name}) reports earnings TODAY pre-market (pending market open). "
-                        "Trading blocked.",
-                    )
-                else:
-                    logger.info(
-                        "Major tech stock %s (%s) reported earnings TODAY pre-market (already absorbed by market).",
-                        sym,
-                        row.get("name") or sym,
-                    )
-            elif not time_str or "time-not-supplied" in time_str:
-                # Unknown time today: conservative block
-                name = row.get("name") or sym
-                return (
-                    True,
-                    f"Major tech stock {sym} ({name}) reports earnings TODAY (unconfirmed time). "
-                    "Trading blocked.",
+                    f"Major tech stock {sym} ({name}) reports earnings TODAY after-hours "
+                    f"({today}). Trading blocked.",
                 )
 
     # 3. Fallback: yfinance calendar check
@@ -478,23 +358,12 @@ def check_tech_earnings_filter(
                     if isinstance(e_dates, list):
                         for ed in e_dates:
                             ed_date = ed if isinstance(ed, datetime.date) else ed.date()
-                            if ed_date == next_td:
+                            if ed_date in (today, next_td):
                                 return (
                                     True,
-                                    f"Major tech stock {sym} reports earnings TOMORROW on {ed_date} "
+                                    f"Major tech stock {sym} reports earnings on {ed_date} "
                                     "(detected via yfinance). Trading blocked.",
                                 )
-                            elif ed_date == today:
-                                bmo_confirmed = any(
-                                    r.get("symbol") == sym and "pre-market" in (r.get("time") or "").lower()
-                                    for r in rows_today
-                                )
-                                if not bmo_confirmed or cur_time < datetime.time(9, 30):
-                                    return (
-                                        True,
-                                        f"Major tech stock {sym} reports earnings TODAY on {ed_date} "
-                                        "(detected via yfinance). Trading blocked.",
-                                    )
             except Exception:
                 pass
     except Exception:
@@ -504,28 +373,23 @@ def check_tech_earnings_filter(
 
 
 def should_skip_trade(
-    current_dt: Optional[datetime.datetime | datetime.date] = None,
+    today: Optional[datetime.date] = None,
     monitored_symbols: Optional[List[str]] = None,
-    current_time: Optional[datetime.time] = None,
 ) -> Tuple[bool, Optional[str]]:
-    """Master filter: returns (True, reason) if trading should be aborted due to events.
+    """Master filter: returns (True, reason) if trading should be aborted due to events."""
+    d = today or datetime.datetime.now(EASTERN_TZ).date()
 
-    If an event scheduled for today has already occurred (e.g. CPI/NFP at 8:30 AM, PMI at 10:00 AM, FOMC by 15:00 ET),
-    and there are no other events today after-hours, tomorrow pre-market, or tomorrow intraday,
-    trading is allowed (returns (False, None)).
-    """
-    # 1. Macro Economic Events Check
-    skip_macro, reason_macro = check_macro_event_filter(current_dt, current_time)
+    # 1. Macro Economic Events Check (FOMC, CPI, NFP)
+    skip_macro, reason_macro = check_macro_event_filter(d)
     if skip_macro:
         return True, reason_macro
 
     # 2. Major Tech Earnings Check
-    skip_tech, reason_tech = check_tech_earnings_filter(current_dt, monitored_symbols, current_time)
+    skip_tech, reason_tech = check_tech_earnings_filter(d, monitored_symbols)
     if skip_tech:
         return True, reason_tech
 
     return False, None
-
 
 
 if __name__ == "__main__":
