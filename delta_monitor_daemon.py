@@ -669,9 +669,14 @@ class DeltaMonitorDaemon:
                         "Cancelling limit order and submitting MARKET ORDER to guarantee fill!",
                         elapsed,
                     )
-                    if active_trade_obj and active_trade_obj.orderStatus.status in ("Submitted", "PreSubmitted"):
-                        self.order_ib.cancelOrder(active_order)
-                        self.order_ib.sleep(1.0)
+                    if active_order and active_trade_obj and active_trade_obj.orderStatus.status in (
+                        "Submitted", "PreSubmitted", "PendingSubmit"
+                    ):
+                        try:
+                            self.order_ib.cancelOrder(active_order)
+                        except Exception as e:
+                            logger.debug("Error cancelling limit order before market fallback: %s", e)
+                        self.order_ib.sleep(0.5)
 
                     market_order = MarketOrder(action="BUY", totalQuantity=quantity, tif="DAY")
                     market_order.transmit = True
@@ -710,29 +715,76 @@ class DeltaMonitorDaemon:
                         current_limit,
                     )
 
-                    if status == "Filled":
+                    filled_qty = getattr(active_trade_obj.orderStatus, "filled", 0.0)
+                    is_filled = (
+                        status == "Filled"
+                        or (
+                            isinstance(filled_qty, (int, float))
+                            and filled_qty >= quantity
+                            and quantity > 0
+                        )
+                    )
+                    if is_filled:
                         logger.info("✅ Closing order FILLED!")
                         break
 
-                    if status in ("Cancelled", "Inactive"):
-                        logger.warning("Order %s unexpectedly! Re-submitting...", status)
+                    if status in ("Cancelled", "ApiCancelled", "Inactive", "ValidationError"):
+                        logger.warning("Order %s unexpectedly! Re-submitting fresh order...", status)
                         active_order = None
                         active_trade_obj = None
                         continue
 
-                    # If not market order and still open, walk UP
+                    # If not market order and still open, walk UP via Cancel & Replace
                     if not is_market_order:
+                        if active_order:
+                            try:
+                                self.order_ib.cancelOrder(active_order)
+                            except Exception as e:
+                                logger.debug("Error cancelling limit order during walk-the-book: %s", e)
+                            self.order_ib.sleep(0.5)
+
+                        # Re-check if it filled while cancelling
+                        status_after_cancel = active_trade_obj.orderStatus.status if active_trade_obj else ""
+                        filled_after_cancel = getattr(active_trade_obj.orderStatus, "filled", 0.0) if active_trade_obj else 0.0
+                        if status_after_cancel == "Filled" or (
+                            isinstance(filled_after_cancel, (int, float))
+                            and filled_after_cancel >= quantity
+                            and quantity > 0
+                        ):
+                            logger.info("✅ Closing order FILLED during cancel!")
+                            break
+
                         current_limit = round(current_limit + self.walk_step, 2)
-                        active_order.lmtPrice = current_limit
-                        active_trade_obj = self.order_ib.placeOrder(combo, active_order)
-                        logger.info("🔄 Repriced closing order UP -> $%.2f", current_limit)
+                        new_limit_order = LimitOrder(
+                            action="BUY",
+                            totalQuantity=quantity,
+                            lmtPrice=current_limit,
+                            tif="DAY",
+                        )
+                        new_limit_order.transmit = True
+                        new_limit_order.overridePercentageConstraints = True
+                        active_order = new_limit_order
+                        active_trade_obj = self.order_ib.placeOrder(combo, new_limit_order)
+                        logger.info("🔄 Repriced closing order UP (Cancel/Replace) -> $%.2f", current_limit)
 
             except Exception as e:
                 logger.error("Unexpected error during emergency close: %s. Retrying in 2 seconds...", e)
                 time.sleep(2.0)
 
         # Post-Fill Completion
-        fill_price = abs(active_trade_obj.orderStatus.avgFillPrice) if active_trade_obj else current_limit
+        fill_price = 0.0
+        if active_trade_obj and getattr(active_trade_obj.orderStatus, "avgFillPrice", 0.0):
+            fill_price = abs(active_trade_obj.orderStatus.avgFillPrice)
+        if fill_price <= 0.0 and active_trade_obj and getattr(active_trade_obj, "fills", []):
+            fill_prices = [
+                abs(fill.execution.price)
+                for fill in active_trade_obj.fills
+                if getattr(fill, "execution", None) and getattr(fill.execution, "price", 0.0)
+            ]
+            if fill_prices:
+                fill_price = sum(fill_prices) / len(fill_prices)
+        if fill_price <= 0.0:
+            fill_price = current_limit
         total_cost = fill_price * 100 * quantity
         total_time_min = (time.time() - start_time) / 60.0
 
